@@ -437,3 +437,72 @@ def test_discovery_adopts_a_hop_that_does_answer(tmp_path, monkeypatch):
     assert [t.host for t in ctx.dynamic_targets] == ["62.156.128.1"]
     assert ctx.dynamic_targets[0].role == "isp_first_hop"
     store.close()
+
+
+def test_make_server_waits_for_a_port_still_in_use(tmp_path, monkeypatch):
+    """A restart must not cost a respawn cycle -- that is a gap in the record.
+
+    Driven through the constructor rather than a real socket race: Windows lets
+    SO_REUSEADDR rebind a live port, so contention cannot be reproduced
+    portably, and a real race makes the rest of the suite flaky.
+    """
+    import errno
+
+    from ispbust import server as server_mod
+
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "wan-a")
+    attempts = []
+    real = server_mod.ThreadingHTTPServer
+
+    def flaky(address, handler):
+        attempts.append(address)
+        if len(attempts) < 3:
+            raise OSError(errno.EADDRINUSE, "Address already in use")
+        return real(("127.0.0.1", 0), handler)
+
+    monkeypatch.setattr(server_mod, "ThreadingHTTPServer", flaky)
+    monkeypatch.setattr(server_mod.time, "sleep", lambda _s: None)
+
+    httpd = server_mod.make_server(store, "wan-a", "A", "under_test", 9109,
+                                   token=None, bind_retry_seconds=30)
+    assert len(attempts) == 3, "should have retried until the port freed up"
+    httpd.server_close()
+    store.close()
+
+
+def test_make_server_gives_up_when_the_port_never_frees(tmp_path, monkeypatch):
+    import errno
+
+    from ispbust import server as server_mod
+
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "wan-a")
+
+    def always_busy(address, handler):
+        raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(server_mod, "ThreadingHTTPServer", always_busy)
+    monkeypatch.setattr(server_mod.time, "sleep", lambda _s: None)
+
+    with pytest.raises(OSError):
+        server_mod.make_server(store, "wan-a", "A", "under_test", 9109,
+                               token=None, bind_retry_seconds=1)
+    store.close()
+
+
+def test_make_server_does_not_swallow_other_errors(tmp_path, monkeypatch):
+    """Only EADDRINUSE is worth waiting on; anything else must surface at once."""
+    import errno
+
+    from ispbust import server as server_mod
+
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "wan-a")
+
+    def denied(address, handler):
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(server_mod, "ThreadingHTTPServer", denied)
+    with pytest.raises(OSError) as exc:
+        server_mod.make_server(store, "wan-a", "A", "under_test", 80,
+                               token=None, bind_retry_seconds=30)
+    assert exc.value.errno == errno.EACCES
+    store.close()

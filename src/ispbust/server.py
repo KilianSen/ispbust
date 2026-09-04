@@ -15,12 +15,14 @@ is still a bad habit.
 
 from __future__ import annotations
 
+import errno
 import hmac
 import json
 import logging
 import shutil
 import tempfile
 import threading
+import time
 import urllib.parse
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -183,12 +185,27 @@ class Handler(BaseHTTPRequestHandler):
 
 def make_server(store: Store, wan_id: str, wan_label: str, wan_kind: str,
                 port: int, token: str | None = None,
-                bind: str = "0.0.0.0") -> ThreadingHTTPServer:
+                bind: str = "0.0.0.0", bind_retry_seconds: int = 30) -> ThreadingHTTPServer:
+    """Build the probe's HTTP server, waiting for the port if it is still held.
+
+    On a restart the previous process can still own the socket for a moment
+    while it finishes flushing. Failing outright there costs a respawn cycle,
+    and a respawn cycle is a hole in the record -- so wait for the port instead.
+    """
     handler = type("BoundHandler", (Handler,), {
         "store": store, "wan_id": wan_id, "wan_label": wan_label,
         "wan_kind": wan_kind, "token": token,
     })
-    httpd = ThreadingHTTPServer((bind, port), handler)
+    deadline = time.monotonic() + max(0, bind_retry_seconds)
+    while True:
+        try:
+            httpd = ThreadingHTTPServer((bind, port), handler)
+            break
+        except OSError as exc:
+            if exc.errno not in (errno.EADDRINUSE,) or time.monotonic() >= deadline:
+                raise
+            LOG.warning("port %d still in use, waiting for it to free up", port)
+            time.sleep(2)
     httpd.daemon_threads = True
     return httpd
 
