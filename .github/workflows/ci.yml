@@ -62,7 +62,7 @@ jobs:
 
       - name: Upload the sample report
         if: matrix.python == '3.12'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: sample-report
           path: /tmp/demo/*.html
