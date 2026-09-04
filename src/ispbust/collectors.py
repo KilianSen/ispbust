@@ -438,6 +438,9 @@ class DiscoveryCollector(Collector):
     def __init__(self, probe: ProbeContext):
         super().__init__(probe)
         self.current: str | None = None
+        # Hops that answer traceroute but not echo, so the warning is logged
+        # once per address rather than every hour.
+        self.silent: set = set()
 
     @property
     def conf(self) -> DiscoveryConfig:
@@ -461,6 +464,18 @@ class DiscoveryCollector(Collector):
             return
         if not self.acceptable(ip):
             return
+        if not self.responds_to_echo(ip):
+            if ip not in self.silent:
+                self.silent.add(ip)
+                LOG.warning(
+                    "discovered hop %s answers traceroute but not ICMP echo -- NOT probing "
+                    "it. Measuring it would record a permanent 100%% loss that is an "
+                    "artefact of the router's ICMP policy, not a fault. The report will "
+                    "omit the first-hop section; the scheduled traceroutes still capture "
+                    "per-hop loss for this address.", ip)
+                self.store.marker("upstream_hop_no_echo", ip)
+            return
+        self.silent.discard(ip)
 
         LOG.info("upstream first hop: %s -> %s", self.current, ip)
         if self.current:
@@ -472,6 +487,24 @@ class DiscoveryCollector(Collector):
         self.probe.set_dynamic([Target(host=ip, role=self.conf.role,
                                        note="auto-discovered ISP next hop")])
         self.store.marker("upstream_hop", ip)
+
+    def responds_to_echo(self, ip: str) -> bool:
+        """Does this hop actually answer pings?
+
+        Plenty of operator routers reply to TTL-exceeded (so they appear in a
+        traceroute) while dropping ICMP echo addressed to themselves. Probing
+        such a hop records 100 % loss forever -- an artefact of its ICMP policy,
+        not a fault. Putting that number in front of an operator would be worse
+        than useless, so the candidate has to prove it answers first.
+        """
+        cmd = ["fping", "-c", "5", "-p", "300", "-t", "1000", "-q", "-r0"]
+        if self.cfg.source_ip:
+            cmd += ["-S", self.cfg.source_ip]
+        rc, _, err = run_cmd(cmd + [ip], timeout=30)
+        if rc == 127:
+            return False
+        replies = IcmpCollector.parse(err).get(ip, [])
+        return any(v is not None for v in replies)
 
     def acceptable(self, ip: str) -> bool:
         """Reject a discovered hop that would corrupt the target set.

@@ -63,6 +63,21 @@ loss inside their network, before any handover — the single most useful number
 in the report. If your router adds an extra hop (double NAT, a modem in router
 mode), set `hop: 3` and confirm with `mtr -n 1.1.1.1`.
 
+**The candidate has to answer pings before it is adopted.** Many operator
+routers — carrier-grade NAT gateways especially — reply to TTL-exceeded, so
+they appear in a traceroute, while silently dropping ICMP echo addressed to
+themselves. Probing one of those would record a permanent 100 % loss that is an
+artefact of its ICMP policy rather than a fault, and putting that number in
+front of an operator would be worse than useless. If the discovered hop does
+not answer, the probe logs a warning, records an `upstream_hop_no_echo` marker,
+and leaves it alone; the report then omits the first-hop section entirely.
+
+You are not left with nothing in that case: the scheduled `mtr` runs still
+record per-hop loss for that address using TTL-exceeded, and those appear in
+the report's path-measurement section. It is also worth asking your operator
+whether they will enable ICMP echo on your gateway for diagnostics — some
+will.
+
 ### `dns`
 
 Queries each resolver in turn, rotating through `names` so a cached answer

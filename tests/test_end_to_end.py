@@ -389,3 +389,51 @@ def test_disabled_traceroute_also_disables_event_captures(tmp_path):
     events = store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     assert events > 0, "the loss event itself must still be recorded"
     store.close()
+
+
+def test_discovery_skips_a_hop_that_does_not_answer_echo(tmp_path, monkeypatch):
+    """Answering traceroute is not the same as answering ping.
+
+    Found on a real line: the operator's CGNAT gateway replies to TTL-exceeded
+    (so mtr shows it at 0.0% loss) but drops echo requests addressed to itself.
+    Probing it would record a permanent 100% loss and put a false claim in the
+    report.
+    """
+    from ispbust import collectors
+
+    collector, ctx, store = _discovery(tmp_path, [("1.1.1.1", "anchor")])
+
+    # mtr finds a hop; fping gets nothing back from it.
+    monkeypatch.setattr(collectors.TraceCollector, "mtr",
+                        lambda self, target, cycles: [{"count": 2, "host": "100.124.1.27"}])
+    monkeypatch.setattr(collectors, "run_cmd",
+                        lambda cmd, timeout: (1, "", "100.124.1.27 : - - - - -\n"))
+
+    collector.run_once()
+
+    assert ctx.dynamic_targets == [], "a silent hop must not become a probe target"
+    kinds = [r[0] for r in store.db.execute("SELECT kind FROM markers")]
+    assert "upstream_hop_no_echo" in kinds, "the reason must be recorded"
+
+    # Repeating must not spam the marker table.
+    collector.run_once()
+    again = [r[0] for r in store.db.execute(
+        "SELECT kind FROM markers WHERE kind='upstream_hop_no_echo'")]
+    assert len(again) == 1
+    store.close()
+
+
+def test_discovery_adopts_a_hop_that_does_answer(tmp_path, monkeypatch):
+    from ispbust import collectors
+
+    collector, ctx, store = _discovery(tmp_path, [("1.1.1.1", "anchor")])
+    monkeypatch.setattr(collectors.TraceCollector, "mtr",
+                        lambda self, target, cycles: [{"count": 2, "host": "62.156.128.1"}])
+    monkeypatch.setattr(collectors, "run_cmd",
+                        lambda cmd, timeout: (0, "", "62.156.128.1 : 1.2 1.3 1.1 1.4 1.2\n"))
+
+    collector.run_once()
+
+    assert [t.host for t in ctx.dynamic_targets] == ["62.156.128.1"]
+    assert ctx.dynamic_targets[0].role == "isp_first_hop"
+    store.close()
