@@ -78,10 +78,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Run ruff from the pinned dev extra rather than a third-party action:
+      # the version then matches what contributors run locally, and there is
+      # one fewer action to keep current.
+      - name: Install tooling
+        run: pip install -e ".[dev]"
+
       - name: Lint
-        uses: astral-sh/ruff-action@v4
-        with:
-          args: check --output-format=github
+        run: ruff check --output-format=github
 
       - name: Shell scripts
         run: |
