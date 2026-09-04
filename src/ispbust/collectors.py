@@ -497,7 +497,11 @@ class DiscoveryCollector(Collector):
         not a fault. Putting that number in front of an operator would be worse
         than useless, so the candidate has to prove it answers first.
         """
-        cmd = ["fping", "-c", "5", "-p", "300", "-t", "1000", "-q", "-r0"]
+        # -C (not -c): the uppercase form prints one RTT per packet, which is
+        # what IcmpCollector.parse understands. The lowercase form prints only a
+        # summary line, which the parser finds no numbers in -- so every host
+        # would look silent.
+        cmd = ["fping", "-C", "5", "-p", "300", "-t", "1000", "-q", "-r0"]
         if self.cfg.source_ip:
             cmd += ["-S", self.cfg.source_ip]
         rc, _, err = run_cmd(cmd + [ip], timeout=30)

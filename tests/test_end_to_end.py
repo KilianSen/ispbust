@@ -406,11 +406,24 @@ def test_discovery_skips_a_hop_that_does_not_answer_echo(tmp_path, monkeypatch):
     # mtr finds a hop; fping gets nothing back from it.
     monkeypatch.setattr(collectors.TraceCollector, "mtr",
                         lambda self, target, cycles: [{"count": 2, "host": "100.124.1.27"}])
-    monkeypatch.setattr(collectors, "run_cmd",
-                        lambda cmd, timeout: (1, "", "100.124.1.27 : - - - - -\n"))
+
+    # The probe must ask fping for per-packet output (-C). With the lowercase
+    # -c it gets only a summary line, which the parser reads as "no replies",
+    # so every hop would look silent and the check would reject all of them --
+    # a bug that survived the first version of this test because the mock
+    # returned the format the code was supposed to use rather than the one it
+    # actually asked for.
+    seen = {}
+
+    def fake_run(cmd, timeout):
+        seen["cmd"] = cmd
+        return (1, "", "100.124.1.27 : - - - - -\n")
+
+    monkeypatch.setattr(collectors, "run_cmd", fake_run)
 
     collector.run_once()
 
+    assert "-C" in seen["cmd"], "must request per-packet output, not a summary"
     assert ctx.dynamic_targets == [], "a silent hop must not become a probe target"
     kinds = [r[0] for r in store.db.execute("SELECT kind FROM markers")]
     assert "upstream_hop_no_echo" in kinds, "the reason must be recorded"
