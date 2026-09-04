@@ -1,0 +1,113 @@
+# ispbust probe -- the link you are building a case about.
+#
+# THE ONE RULE: this probe must be pinned to this WAN with failover DISABLED.
+# A probe that fails over records a healthy line at exactly the moment the line
+# breaks, which destroys the evidence you are collecting. See docs/01-setup.md.
+
+wan:
+  id: wan-a
+  label: "Fibre line"          # appears verbatim in the report
+  kind: under_test
+  # Only needed when the probe host has several addresses.
+  source_ip: ""
+
+server:
+  port: 9109
+  # Shared secret for /export/*. Generate one with `openssl rand -hex 24`.
+  # Leave empty only on a fully trusted network.
+  export_token: ""
+
+storage:
+  data_dir: /var/lib/ispbust
+  # 0 keeps everything. The NDJSON archive is never pruned regardless.
+  retain_days: 0
+
+icmp:
+  window_seconds: 60          # one aggregated row per target per minute
+  packet_interval_ms: 1000    # 1 pps -- 1440 samples per target per day
+  timeout_ms: 1500
+  event_loss_ratio: 0.02      # 2 % loss in a minute is logged as an event
+  event_rtt_ms: 150
+
+  targets:
+    # Neutral internet anchors. Keep these identical on the control probe --
+    # identical targets are what make the comparison airtight.
+    - host: 1.1.1.1
+      role: anchor
+      note: "Cloudflare"
+    - host: 8.8.8.8
+      role: anchor
+      note: "Google"
+    - host: 9.9.9.9
+      role: anchor
+      note: "Quad9"
+
+    # An anchor in your own country keeps the path short, so loss cannot be
+    # blamed on a long international route.
+    - host: 194.25.0.60
+      role: anchor_de
+      note: "Deutsche Telekom resolver -- replace with a local one"
+
+    # Your operator's resolvers. tools/discover.sh prints them.
+    # Probing them by ICMP *and* querying them under `dns:` separates
+    # "the line is broken" from "their resolvers are broken".
+    # - host: 203.0.113.10
+    #   role: isp_resolver
+    # - host: 203.0.113.11
+    #   role: isp_resolver
+
+    # Your modem's management address, if it has one that answers.
+    # - host: 192.168.100.1
+    #   role: ont_mgmt
+
+upstream_discovery:
+  # Finds the operator's own first hop and probes it continuously. Loss there
+  # is loss inside their network, before any handover -- the single most
+  # useful number in the whole report.
+  enabled: true
+  via: 1.1.1.1
+  hop: 2                      # hop 1 is your router, hop 2 the operator's edge
+  role: isp_first_hop
+  interval_seconds: 3600
+
+dns:
+  enabled: true
+  interval_seconds: 15
+  timeout_seconds: 3.0
+  # Rotated, so a cached answer cannot hide a broken resolver.
+  names:
+    - example.com
+    - heise.de
+    - google.com
+    - cloudflare.com
+    - wikipedia.org
+  resolvers:
+    # - ip: 203.0.113.10
+    #   role: isp_resolver
+    # - ip: 203.0.113.11
+    #   role: isp_resolver
+    - ip: 1.1.1.1
+      role: public_control
+    - ip: 9.9.9.9
+      role: public_control
+
+tcp:
+  enabled: true
+  interval_seconds: 60
+  targets:
+    - host: www.heise.de
+      port: 443
+      tls: true
+    - host: cloudflare.com
+      port: 443
+      tls: true
+
+traceroute:
+  enabled: true
+  target: 1.1.1.1
+  cycles: 10
+  interval_seconds: 900
+  # Snapshot the path the moment loss appears. A traceroute taken afterwards
+  # shows nothing, which is why this is triggered rather than only scheduled.
+  on_event: true
+  on_event_cooldown_seconds: 300

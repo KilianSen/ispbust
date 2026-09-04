@@ -1,0 +1,24 @@
+# ispbust -- live view only. The evidence lives in the probes' SQLite and
+# NDJSON archives; Prometheus is here so you can watch the line misbehave in
+# real time and catch a probe that has stopped reporting.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    site: home
+
+scrape_configs:
+  - job_name: ispbust-probe
+    static_configs:
+      # Replace with your probe addresses. The wan/wan_kind labels come from
+      # the probes themselves, so nothing here needs to know your ISP.
+      - targets: ["10.0.61.10:9109"]
+        labels:
+          probe: under-test
+      - targets: ["10.0.62.10:9109"]
+        labels:
+          probe: control
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

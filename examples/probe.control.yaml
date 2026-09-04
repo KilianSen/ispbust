@@ -1,0 +1,91 @@
+# ispbust probe -- the control link.
+#
+# This probe exists to kill the two objections every operator reaches for
+# first: "the problem is on your side" and "the internet was congested". It
+# runs the identical measurement, from the identical LAN, in the identical
+# second, over a different WAN. When one link drops 40 % of packets and this
+# one drops 0.2 %, neither objection survives.
+#
+# Pinned to the second WAN with failover DISABLED, exactly like the other one.
+
+wan:
+  id: wan-b
+  label: "Backup link"
+  kind: control
+  source_ip: ""
+
+server:
+  port: 9109
+  export_token: ""
+
+storage:
+  data_dir: /var/lib/ispbust
+  retain_days: 0
+
+icmp:
+  window_seconds: 60
+  packet_interval_ms: 1000
+  timeout_ms: 1500
+  # A satellite or LTE control drops packets in normal operation, so the event
+  # threshold is looser here. It does not affect the comparison, which uses the
+  # site-wide thresholds.
+  event_loss_ratio: 0.05
+  event_rtt_ms: 250
+
+  targets:
+    # DELIBERATELY IDENTICAL to the probe under test. Do not "improve" one list
+    # without the other -- the comparison depends on them matching.
+    - host: 1.1.1.1
+      role: anchor
+      note: "Cloudflare"
+    - host: 8.8.8.8
+      role: anchor
+      note: "Google"
+    - host: 9.9.9.9
+      role: anchor
+      note: "Quad9"
+    - host: 194.25.0.60
+      role: anchor_de
+      note: "Deutsche Telekom resolver -- replace with a local one"
+
+upstream_discovery:
+  enabled: true
+  via: 1.1.1.1
+  hop: 2
+  role: isp_first_hop
+  interval_seconds: 3600
+
+dns:
+  enabled: true
+  interval_seconds: 15
+  timeout_seconds: 3.0
+  names:
+    - example.com
+    - heise.de
+    - google.com
+    - cloudflare.com
+    - wikipedia.org
+  resolvers:
+    - ip: 1.1.1.1
+      role: public_control
+    - ip: 9.9.9.9
+      role: public_control
+
+tcp:
+  enabled: true
+  interval_seconds: 60
+  targets:
+    - host: www.heise.de
+      port: 443
+      tls: true
+    - host: cloudflare.com
+      port: 443
+      tls: true
+
+traceroute:
+  enabled: true
+  target: 1.1.1.1
+  cycles: 10
+  interval_seconds: 900
+  on_event: true
+  on_event_cooldown_seconds: 300

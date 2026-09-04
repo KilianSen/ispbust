@@ -1,0 +1,183 @@
+name: Docker images
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: probe
+            dockerfile: docker/Dockerfile.probe
+          - image: report
+            dockerfile: docker/Dockerfile.report
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR rejects mixed-case paths, and github.repository preserves the
+      # owner's capitalisation.
+      - name: Lowercase the image path
+        id: img
+        run: echo "name=${GITHUB_REPOSITORY,,}-${{ matrix.image }}" >> "$GITHUB_OUTPUT"
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.img.outputs.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,prefix=master-,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=pr
+          labels: |
+            org.opencontainers.image.title=ispbust ${{ matrix.image }}
+            org.opencontainers.image.description=Continuous ISP line measurement and fault evidence
+
+      # Build amd64 only and load it, so the image can actually be run before
+      # anything is published. A pushed image that has never been started is
+      # not a tested image.
+      - name: Build for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          tags: ispbust-${{ matrix.image }}:test
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Smoke test -- report image
+        if: matrix.image == 'report'
+        run: |
+          set -euo pipefail
+          docker run --rm ispbust-report:test --version
+          docker run --rm ispbust-report:test selftest
+          docker run --rm -v "$PWD/examples:/ex:ro" ispbust-report:test \
+            check --site /ex/site.yaml
+
+      # The probe is the half that has to survive unattended for months, so CI
+      # actually runs it: start it, let it measure, and confirm the HTTP surface
+      # the report container depends on really works.
+      - name: Smoke test -- probe image
+        if: matrix.image == 'probe'
+        run: |
+          set -euo pipefail
+          docker run --rm ispbust-probe:test --version
+          docker run --rm -v "$PWD/examples:/ex:ro" ispbust-probe:test \
+            check --probe /ex/probe.under-test.yaml
+
+          docker run -d --name probe-smoke --cap-add NET_RAW -p 9109:9109 \
+            -v "$PWD/.github/ci/probe.ci.yaml:/etc/ispbust/probe.yaml:ro" \
+            ispbust-probe:test probe
+
+          echo "waiting for the probe to come up"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9109/health >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:9109/health
+
+          echo "letting it collect"
+          sleep 45
+
+          echo "--- /info ---"
+          curl -fsS http://127.0.0.1:9109/info | tee /tmp/info.json
+          echo
+
+          echo "--- export must reject a missing token ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9109/export/sqlite)
+          test "$code" = "401" || { echo "expected 401, got $code"; exit 1; }
+
+          echo "--- export with the token must return a usable database ---"
+          curl -fsS -H "Authorization: Bearer ci-token" \
+            http://127.0.0.1:9109/export/sqlite -o /tmp/export.sqlite
+          python3 - <<'PY'
+          import json, sqlite3
+
+          info = json.load(open("/tmp/info.json"))
+          assert info["wan"]["id"] == "ci-probe", info
+          tables = info["store"]["tables"]
+          # ICMP can be blocked on a runner; TCP and DNS cannot be. Requiring
+          # "something was recorded" keeps this a real test without making it
+          # hostage to the runner's egress rules.
+          recorded = {t: v.get("rows", 0) for t, v in tables.items() if v.get("rows")}
+          print("recorded:", recorded)
+          assert recorded, "probe stored nothing at all"
+
+          con = sqlite3.connect("/tmp/export.sqlite")
+          names = {r[0] for r in con.execute(
+              "SELECT name FROM sqlite_master WHERE type='table'")}
+          for required in ("icmp", "dns", "tcp", "events", "markers"):
+              assert required in names, f"exported db is missing {required}"
+          rows = con.execute("SELECT COUNT(*) FROM markers").fetchone()[0]
+          assert rows > 0, "exported db has no markers -- probe_start was not written"
+          print("exported database looks sane")
+          PY
+
+          docker logs probe-smoke
+          docker rm -f probe-smoke
+
+      - name: Build and push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### ispbust-${{ matrix.image }}"
+            echo
+            echo "Platforms: \`linux/amd64\`, \`linux/arm64\`"
+            echo
+            echo "Tags:"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

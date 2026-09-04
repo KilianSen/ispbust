@@ -1,0 +1,172 @@
+# ispbust -- full stack.
+#
+#   docker compose up -d                      # probes + report service
+#   docker compose --profile metrics up -d    # add Prometheus and Grafana
+#
+# NETWORKING IS THE WHOLE GAME. Each probe must leave the host over exactly one
+# uplink, with no failover. Two ways to arrange that:
+#
+#   1. One host (VM, LXC, Pi) per uplink, whose default route is that uplink,
+#      with `network_mode: host`. Simplest and hardest to get wrong -- run this
+#      file twice, once per host, with a different probe enabled each time.
+#   2. One host with a macvlan network per VLAN (see the bottom of this file),
+#      where your router policy-routes each VLAN to one uplink.
+#
+# Verify before trusting any data: unplug the link under test and confirm its
+# probe goes completely dark. If it keeps answering, it is failing over and
+# every measurement you take is worthless.
+
+name: ispbust
+
+x-probe-common: &probe-common
+  # Published by CI from master. `docker compose build` still builds locally.
+  image: ${ISPBUST_IMAGE_PREFIX:-ghcr.io/kiliansen/ispbust}-probe:${ISPBUST_VERSION:-latest}
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.probe
+  restart: unless-stopped
+  # fping and mtr need raw sockets; the process itself still runs unprivileged.
+  cap_add:
+    - NET_RAW
+  environment:
+    TZ: ${TZ:-Europe/Berlin}
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # ---------------------------------------------------------------- probes
+
+  probe-under-test:
+    <<: *probe-common
+    container_name: ispbust-probe-under-test
+    hostname: probe-under-test
+    network_mode: host
+    volumes:
+      - ${UNDER_TEST_CONFIG:-../examples/probe.under-test.yaml}:/etc/ispbust/probe.yaml:ro
+      - probe-under-test-data:/var/lib/ispbust
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      ISPBUST_WAN_ID: ${UNDER_TEST_ID:-wan-a}
+      ISPBUST_WAN_LABEL: ${UNDER_TEST_LABEL:-Fibre line}
+      ISPBUST_WAN_KIND: under_test
+      ISPBUST_EXPORT_TOKEN: ${ISPBUST_EXPORT_TOKEN:-}
+      ISPBUST_PORT: "9109"
+
+  probe-control:
+    <<: *probe-common
+    container_name: ispbust-probe-control
+    hostname: probe-control
+    network_mode: host
+    volumes:
+      - ${CONTROL_CONFIG:-../examples/probe.control.yaml}:/etc/ispbust/probe.yaml:ro
+      - probe-control-data:/var/lib/ispbust
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      ISPBUST_WAN_ID: ${CONTROL_ID:-wan-b}
+      ISPBUST_WAN_LABEL: ${CONTROL_LABEL:-Backup link}
+      ISPBUST_WAN_KIND: control
+      ISPBUST_EXPORT_TOKEN: ${ISPBUST_EXPORT_TOKEN:-}
+      # Second probe on the same host would collide on 9109; on separate hosts
+      # (the recommended layout) leave this at 9109 too.
+      ISPBUST_PORT: "9119"
+
+  # --------------------------------------------------- retrieval + report
+
+  report:
+    image: ${ISPBUST_IMAGE_PREFIX:-ghcr.io/kiliansen/ispbust}-report:${ISPBUST_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.report
+    container_name: ispbust-report
+    restart: unless-stopped
+    ports:
+      - "${REPORT_PORT:-8080}:8080"
+    volumes:
+      - ${SITE_CONFIG:-../examples/site.yaml}:/etc/ispbust/site.yaml:ro
+      - report-data:/data
+      - ./reports:/reports
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      ISPBUST_INTERVAL: ${REBUILD_INTERVAL:-21600}   # rebuild every 6 hours
+      ISPBUST_REPORT_DAYS: ${REPORT_DAYS:-30}
+      ISPBUST_LANGUAGE: ${REPORT_LANGUAGE:-}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ------------------------------------------- optional live dashboards
+  # Prometheus is the live view, not the evidence: the evidence lives in the
+  # probes' SQLite and NDJSON archives, which survive a Prometheus wipe.
+
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: ispbust-prometheus
+    profiles: ["metrics"]
+    restart: unless-stopped
+    user: "65534:65534"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=730d
+      - --storage.tsdb.retention.size=20GB
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+  grafana:
+    image: grafana/grafana:11.5.1
+    container_name: ispbust-grafana
+    profiles: ["metrics"]
+    restart: unless-stopped
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-ispbust}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+
+volumes:
+  probe-under-test-data:
+  probe-control-data:
+  report-data:
+  prometheus-data:
+  grafana-data:
+
+# Alternative to network_mode: host -- one macvlan per probe VLAN, where the
+# router policy-routes each VLAN to one uplink. Attach a probe with:
+#
+#   networks:
+#     vlan-under-test:
+#       ipv4_address: 10.0.61.10
+#
+# networks:
+#   vlan-under-test:
+#     driver: macvlan
+#     driver_opts:
+#       parent: eth0.61
+#     ipam:
+#       config:
+#         - subnet: 10.0.61.0/24
+#           gateway: 10.0.61.1
+#   vlan-control:
+#     driver: macvlan
+#     driver_opts:
+#       parent: eth0.62
+#     ipam:
+#       config:
+#         - subnet: 10.0.62.0/24
+#           gateway: 10.0.62.1

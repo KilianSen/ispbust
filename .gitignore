@@ -1,0 +1,26 @@
+# generated output
+demo/
+reports/
+docker/reports/*
+!docker/reports/.gitkeep
+ont-evidence/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.ndjson
+
+# never commit local config or secrets
+docker/.env
+/site.yaml
+/probe.*.yaml
+schedule.txt
+
+# python
+__pycache__/
+*.egg-info/
+*.pyc
+.pytest_cache/
+build/
+dist/
+.venv/
+docs/90-deutsche-glasfaser.md

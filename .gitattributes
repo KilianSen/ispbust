@@ -1,0 +1,8 @@
+# Normalise to LF in the repository. Without this, a Windows checkout writes
+# CRLF into shell scripts and Dockerfiles, which then fail inside Linux images
+# with "\r: command not found".
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.sqlite binary

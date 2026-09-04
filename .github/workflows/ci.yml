@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Unit and integration tests
+        run: pytest -q
+
+      # Exercises the whole chain -- synthetic data, analysis, and rendering in
+      # every language the string table knows about.
+      - name: Selftest
+        run: ispbust selftest
+
+      - name: Shipped example configs must stay valid
+        run: |
+          ispbust check --probe examples/probe.under-test.yaml
+          ispbust check --probe examples/probe.control.yaml
+          ispbust check --site examples/site.yaml
+
+      - name: Build a report end to end
+        run: |
+          ispbust demo --out-dir /tmp/demo --days 3 --language en
+          ispbust report --site /tmp/demo/site.yaml --no-fetch --language de \
+            --data-dir /tmp/demo --out /tmp/demo/report-de.html \
+            --from "$(date -u -d '3 days ago' +%F)" --to "$(date -u -d 'yesterday' +%F)"
+          test -s /tmp/demo/report.html
+          test -s /tmp/demo/report-de.html
+          grep -q 'Störungsdokumentation' /tmp/demo/report-de.html
+
+      - name: Upload the sample report
+        if: matrix.python == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-report
+          path: /tmp/demo/*.html
+          retention-days: 14
+
+  static:
+    name: static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Lint
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: check --output-format=github
+
+      - name: Shell scripts
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning tools/*.sh
+
+      - name: Compose file and dashboards parse
+        run: |
+          docker compose -f docker/docker-compose.yml config --quiet
+          python -c "import json;json.load(open('docker/grafana/dashboards/ispbust.json'))"

@@ -1,0 +1,241 @@
+{
+  "uid": "ispbust-main",
+  "title": "ispbust — link under test vs control",
+  "tags": ["ispbust"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "role",
+        "type": "custom",
+        "label": "Target role",
+        "current": { "text": "anchor", "value": "anchor|anchor_de" },
+        "options": [
+          { "text": "anchors", "value": "anchor|anchor_de", "selected": true },
+          { "text": "ISP first hop", "value": "isp_first_hop", "selected": false },
+          { "text": "ISP resolvers", "value": "isp_resolver", "selected": false },
+          { "text": "modem management", "value": "ont_mgmt", "selected": false }
+        ],
+        "query": "anchor|anchor_de,isp_first_hop,isp_resolver,ont_mgmt"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Packet delivery, last 24h (higher is better)",
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "ispbust-prom" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1 - (sum by (wan, wan_kind) (increase(ispbust_icmp_lost_total{role=~\"anchor|anchor_de\"}[24h])) / clamp_min(sum by (wan, wan_kind) (increase(ispbust_icmp_sent_total{role=~\"anchor|anchor_de\"}[24h])), 1))",
+          "legendFormat": "{{wan}} ({{wan_kind}})"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.98 },
+              { "color": "green", "value": 0.999 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Impairment events, last 24h",
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "ispbust-prom" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (wan, kind) (increase(ispbust_events_total[24h]))",
+          "legendFormat": "{{wan}} / {{kind}}"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Packet loss to $role — same minute, same targets, different uplink",
+      "description": "The core exhibit. Both probes sit on the same LAN and send identical traffic; only the uplink differs.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "ispbust-prom" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (wan, wan_kind) (ispbust_icmp_loss_ratio{role=~\"$role\"})",
+          "legendFormat": "{{wan}} ({{wan_kind}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "fillOpacity": 20, "lineWidth": 2, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*under_test.*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*control.*" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }]
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Loss to the operator's own first hop (inside their network)",
+      "description": "Loss here cannot be attributed to the public internet, to the control link, or to the customer LAN.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "ispbust-prom" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ispbust_icmp_loss_ratio{wan_kind=\"under_test\", role=\"isp_first_hop\"}",
+          "legendFormat": "{{target}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "fillOpacity": 25, "lineWidth": 2, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "RTT to anchors — mean and p95",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "ispbust-prom" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (wan, stat) (ispbust_icmp_rtt_ms{role=~\"anchor|anchor_de\", stat=~\"avg|p95\"})",
+          "legendFormat": "{{wan}} {{stat}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "fillOpacity": 0, "lineWidth": 2, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "DNS failure rate by resolver (timeouts and errors per minute)",
+      "description": "Separates 'the operator's resolvers are broken' from 'the line is broken'.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "ispbust-prom" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (wan, resolver, resolver_role) (rate(ispbust_dns_queries_total{outcome=~\"timeout|error\"}[5m])) * 60",
+          "legendFormat": "{{wan}} → {{resolver}} ({{resolver_role}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "DNS query time",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "ispbust-prom" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (wan, resolver) (ispbust_dns_query_seconds)",
+          "legendFormat": "{{wan}} → {{resolver}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 0, "lineWidth": 2, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "TCP connect and TLS handshake time",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "ispbust-prom" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (wan, phase) (ispbust_tcp_connect_seconds)",
+          "legendFormat": "{{wan}} {{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 0, "lineWidth": 2, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Probe liveness — gaps here are gaps in the evidence",
+      "description": "A missing probe is the first thing a support desk will point at. Investigate every gap.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "ispbust-prom" },
+      "targets": [
+        { "refId": "A", "expr": "ispbust_probe_up", "legendFormat": "{{wan}} reports up" },
+        { "refId": "B", "expr": "up{job=\"ispbust-probe\"}", "legendFormat": "scrape {{probe}}" },
+        {
+          "refId": "C",
+          "expr": "sum by (wan, collector) (increase(ispbust_collector_errors_total[15m]))",
+          "legendFormat": "errors {{wan}}/{{collector}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "fillOpacity": 30, "lineWidth": 1, "showPoints": "never" }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+# ispbust site config -- read by the report container.
+#
+# Describes which links exist, which one is under investigation, and how the
+# report should read. The collection containers never see this file.
+
+site:
+  name: "home"
+  timezone: Europe/Berlin
+  language: de                 # de or en; `ispbust report --language` overrides
+  isp_name: "Example Fibre GmbH"
+  customer_ref: "1234567"      # your account number, printed on the report
+  # Optional context only -- ispbust does not measure throughput.
+  contract_downstream_mbps: 1000
+  contract_upstream_mbps: 500
+
+probes:
+  - id: wan-a
+    label: "Fibre line"
+    kind: under_test
+    url: http://10.0.61.10:9109
+    token: ""                  # must match the probe's server.export_token
+
+  - id: wan-b
+    label: "Backup link"
+    kind: control
+    url: http://10.0.62.10:9109
+    token: ""
+
+  # Instead of a URL you can point at a database file directly, for working
+  # from an archive or when everything runs on one host:
+  # - id: wan-a
+  #   label: "Fibre line"
+  #   kind: under_test
+  #   db: /data/wan-a.sqlite
+
+thresholds:
+  # A minute at or above this counts as degraded, and feeds the outage runs.
+  degraded_loss: 0.05
+  # A minute at or above this counts as a total outage.
+  blackout_loss: 0.999
+
+experiment:
+  # A/B test of a daily intervention, usually a modem power cycle.
+  # The seed fixes the schedule in advance, which is what makes the result
+  # evidence rather than an anecdote. Pick one and never change it.
+  enabled: false
+  hour: 3
+  seed: 0
+  device_label: "fibre modem"
+  # Optional smart-plug endpoints, e.g. a Shelly:
+  # plug_off_url: http://10.0.50.9/relay/0?turn=off
+  # plug_on_url:  http://10.0.50.9/relay/0?turn=on
+  off_seconds: 45

@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ispbust"
+version = "1.0.0"
+description = "Prove an ISP line is faulty, with evidence a support desk cannot deflect."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "ispbust contributors" }]
+keywords = ["isp", "monitoring", "packet-loss", "evidence", "prometheus", "sla"]
+classifiers = [
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Networking :: Monitoring",
+]
+
+dependencies = [
+    "PyYAML>=6.0",
+    "prometheus-client>=0.20",
+    "dnspython>=2.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ispbust = "ispbust.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/your/ispbust#readme"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ispbust = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM"]
+ignore = [
+    # The codebase uses %-formatting throughout: it is what the report
+    # renderer wants and it keeps the string table free of f-string syntax.
+    "UP031", "UP032",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
