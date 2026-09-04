@@ -1,7 +1,7 @@
 #!/bin/sh
-# Run this ON a UniFi gateway (UDM/UDM Pro/UXG) (ssh root@<udmp-ip>) to collect the facts the probe
-# config needs: which interface is which WAN, the DG gateway, and DG's
-# resolvers. Prints a ready-to-paste YAML fragment at the end.
+# Run this ON a UniFi gateway (UDM, UDM Pro, UXG; ssh root@<gateway>) to collect
+# the facts a probe config needs: which interface is which WAN, the operator's
+# gateway, and the operator's resolvers.
 #
 # Read-only. Uses /bin/sh so it works in UniFi OS's minimal shell.
 
@@ -57,13 +57,14 @@ echo
 
 cat <<'HINT'
 === what to do with this ===
-1. Identify the DG WAN interface (the one whose gateway is a public address in
-   DG's range, not 192.168.x.x).
-2. Take "option domain-name-servers" from that interface's lease -- those are
-   DG's resolvers. Paste them into probe/config.dg.yaml under BOTH
-   icmp.targets (role: isp_resolver) and dns.resolvers (role: isp_resolver).
+1. Identify the WAN interface you are investigating -- the one whose gateway is
+   a public address in your operator's range, not 192.168.x.x.
+2. Take "option domain-name-servers" from that interface's lease. Those are
+   your operator's resolvers. Put them in your probe config under BOTH
+   icmp.targets (role: isp_resolver) and dns.resolvers (role: isp_resolver);
+   see examples/probe.under-test.yaml.
 3. Note the gateway address. The probe discovers it automatically as hop 2,
    but pinning it explicitly makes the evidence unambiguous.
-4. Re-run this after any DG-side change; if the gateway or resolvers move,
-   that is itself worth recording.
+4. Re-run this after any operator-side change. If the gateway or the resolvers
+   move, that is itself worth recording.
 HINT

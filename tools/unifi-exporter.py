@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Export UDM Pro WAN state to Prometheus, and archive the raw JSON.
+Export UniFi gateway WAN state to Prometheus, and archive the raw JSON.
 
 The router's own view of the link is independent corroboration: it records
 carrier loss, DHCP lease changes and WAN failover events that a ping probe
-cannot see. When DG claims "the line was up", the router's own uptime counter
-resetting is awkward for them.
+cannot see. When an operator claims "the line was up", their customer's own
+router logging the session dropping is awkward for them.
 
-  export UDMP_HOST=10.0.60.1 UDMP_USER=ispbust-ro UDMP_PASS=...
-  python udmp_exporter.py --port 9110 --archive /var/lib/ispbust/udmp
+  export UNIFI_HOST=10.0.60.1 UNIFI_USER=ispbust-ro UNIFI_PASS=...
+  python unifi-exporter.py --port 9110 --archive /var/lib/ispbust/unifi
 
-Create a dedicated LOCAL admin account on the UDM Pro for this (Settings ->
+Create a dedicated LOCAL admin account on the gateway for this (Settings ->
 Admins -> Add Admin -> Restrict to Local Access, read-only role). Do not use
 your Ubiquiti SSO account: SSO logins are rate-limited and MFA-gated.
 
-Self-signed certificate verification is off by default because the UDM Pro
+Self-signed certificate verification is off by default because the gateway
 ships one; the connection stays on the LAN.
 """
 
@@ -35,21 +35,21 @@ from pathlib import Path
 
 from prometheus_client import Counter, Gauge, start_http_server
 
-LOG = logging.getLogger("udmp")
+LOG = logging.getLogger("unifi")
 
-G_UP = Gauge("udmp_wan_up", "WAN reported up by the router", ["wan", "name"])
-G_LATENCY = Gauge("udmp_wan_latency_ms", "WAN latency as measured by the router", ["wan", "name"])
-G_UPTIME = Gauge("udmp_wan_uptime_seconds", "WAN uptime reported by the router", ["wan", "name"])
-G_RX = Gauge("udmp_wan_rx_bytes", "WAN bytes received", ["wan", "name"])
-G_TX = Gauge("udmp_wan_tx_bytes", "WAN bytes sent", ["wan", "name"])
-G_SPEED = Gauge("udmp_wan_link_speed_mbps", "Negotiated link speed", ["wan", "name"])
-G_IPINFO = Gauge("udmp_wan_ip_info", "Current WAN IP and gateway (value=1)",
+G_UP = Gauge("unifi_wan_up", "WAN reported up by the router", ["wan", "name"])
+G_LATENCY = Gauge("unifi_wan_latency_ms", "WAN latency as measured by the router", ["wan", "name"])
+G_UPTIME = Gauge("unifi_wan_uptime_seconds", "WAN uptime reported by the router", ["wan", "name"])
+G_RX = Gauge("unifi_wan_rx_bytes", "WAN bytes received", ["wan", "name"])
+G_TX = Gauge("unifi_wan_tx_bytes", "WAN bytes sent", ["wan", "name"])
+G_SPEED = Gauge("unifi_wan_link_speed_mbps", "Negotiated link speed", ["wan", "name"])
+G_IPINFO = Gauge("unifi_wan_ip_info", "Current WAN IP and gateway (value=1)",
                  ["wan", "name", "ip", "gateway"])
-C_SCRAPE_FAIL = Counter("udmp_scrape_failures", "Failed polls of the UDM Pro")
-G_SCRAPE_OK = Gauge("udmp_scrape_ok", "Last poll succeeded")
+C_SCRAPE_FAIL = Counter("unifi_scrape_failures", "Failed polls of the gateway")
+G_SCRAPE_OK = Gauge("unifi_scrape_ok", "Last poll succeeded")
 
 
-class Udmp:
+class UniFiGateway:
     def __init__(self, host: str, user: str, password: str, verify: bool):
         self.base = "https://" + host
         self.user = user
@@ -158,10 +158,10 @@ def archive(path: Path, devices: list, health: list) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Export UDM Pro WAN state to Prometheus.")
-    ap.add_argument("--host", default=os.environ.get("UDMP_HOST", ""))
-    ap.add_argument("--user", default=os.environ.get("UDMP_USER", ""))
-    ap.add_argument("--password", default=os.environ.get("UDMP_PASS", ""))
+    ap = argparse.ArgumentParser(description="Export UniFi gateway WAN state to Prometheus.")
+    ap.add_argument("--host", default=os.environ.get("UNIFI_HOST", ""))
+    ap.add_argument("--user", default=os.environ.get("UNIFI_USER", ""))
+    ap.add_argument("--password", default=os.environ.get("UNIFI_PASS", ""))
     ap.add_argument("--port", type=int, default=9110)
     ap.add_argument("--interval", type=int, default=30)
     ap.add_argument("--archive", type=Path, default=None,
@@ -173,9 +173,9 @@ def main() -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if not (args.host and args.user and args.password):
-        sys.exit("set --host/--user/--password or UDMP_HOST/UDMP_USER/UDMP_PASS")
+        sys.exit("set --host/--user/--password or UNIFI_HOST/UNIFI_USER/UNIFI_PASS")
 
-    client = Udmp(args.host, args.user, args.password, args.verify_tls)
+    client = UniFiGateway(args.host, args.user, args.password, args.verify_tls)
 
     if args.once:
         client.login()

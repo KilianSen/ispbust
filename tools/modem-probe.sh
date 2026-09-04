@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Identify the DG fibre modem and pull whatever it will tell us about the
-# optical link. Optical receive power and GPON error counters are the strongest
-# single piece of evidence available: a drifting Rx level or rising FEC/BIP
-# error count is a physical-layer fault that no amount of "have you rebooted
-# it" can explain away.
+# Identify the operator-supplied modem and pull whatever it will tell us about
+# the physical link. Signal levels and error counters are the strongest single
+# piece of evidence available: a drifting optical receive power, a falling SNR
+# margin or a rising error count is a physical-layer fault that no amount of
+# "have you rebooted it" can explain away.
 #
-# Run from a host on the segment between the ONT and the UDM Pro, or from the
-# UDM Pro itself. Read-only: it never writes to the device.
+# Run from a host on the segment between the modem and your router, or from the
+# router itself. Read-only: it never writes to the device.
 #
 #   ./modem-probe.sh                 # scan the usual management addresses
 #   ./modem-probe.sh 192.168.100.1   # probe a known address
 #
-# If nothing answers, the ONT's management address may live on a subnet your
-# interface has no address in. Add a secondary address first, e.g. on the UDMP:
-#   ip addr add 192.168.100.2/24 dev eth8    # then remove it again afterwards
+# If nothing answers, the modem's management address may live on a subnet your
+# interface has no address in. Add a secondary address first:
+#   ip addr add 192.168.100.2/24 dev <wan-interface>   # remove it afterwards
 set -uo pipefail
 
 OUT_DIR="${ONT_OUT_DIR:-./ont-evidence}"
@@ -100,13 +100,13 @@ Also worth capturing if the device exposes them:
   * LOS / LOF / dying-gasp counters
   * ONT uptime -- proves whether it reset on its own
 
-=== if the ONT tells you nothing ===
+=== if the modem tells you nothing ===
 That is itself a finding, and it is the core of the argument for replacing it:
-a sealed modem that exposes no diagnostics leaves both sides guessing. Ask DG
-in writing to read out the OLT-side values for your ONT instead:
-  * Rx power at the OLT for your ONT, historical if they keep it
-  * per-ONT error counters and deactivation/reactivation log
-  * ranging and dying-gasp events
+a sealed modem that exposes no diagnostics leaves both sides guessing. Ask your
+operator in writing to read out their own line-side values instead:
+  * signal level at their end for your line, historical if they keep it
+  * per-line error counters and the deactivation/reactivation log
+  * ranging, retrain and dying-gasp events
 They have all of this. Requesting it in writing also creates a paper trail
 showing you asked and what they answered.
 NOTES

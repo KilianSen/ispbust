@@ -6,9 +6,8 @@ Two documents exist:
 * a **site config**, read by the report container -- which probes exist, which
   one is under test, and how the report should read
 
-Everything is deliberately vendor-neutral. The tool has no idea what a
-"Deutsche Glasfaser" or a "Starlink" is; it knows a link under test and one or
-more controls.
+Everything is deliberately vendor-neutral. The tool has no idea who sells you
+either connection; it knows a link under test and one or more controls.
 """
 
 from __future__ import annotations
