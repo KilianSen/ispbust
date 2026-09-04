@@ -18,6 +18,15 @@ RestartSec=5
 OOMPolicy=continue
 OOMScoreAdjust=-500
 
+# fping and mtr need raw sockets. NoNewPrivileges=true is worth keeping, but
+# it disables file capabilities on execve -- so the cap_net_raw set on the
+# fping binary is stripped and every ping silently fails, recording 100 % loss
+# on a perfectly healthy link. Granting the capability ambiently instead
+# survives NoNewPrivileges and hands the probe exactly CAP_NET_RAW, nothing
+# else.
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+
 StateDirectory=ispbust
 ReadWritePaths=/var/lib/ispbust
 ProtectSystem=strict
