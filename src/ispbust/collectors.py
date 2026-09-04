@@ -225,7 +225,10 @@ class IcmpCollector(Collector):
                 kind, target.role, host,
                 "loss=%.1f%% avg=%s max=%s p95=%s"
                 % (ratio * 100, stats["avg"], stats["max"], stats["p95"]))
-        if kinds and self.cfg.trace.on_event:
+        # `enabled: false` means no traceroutes at all -- scheduled or triggered.
+        # CI caught the opposite reading: a probe with traceroute disabled was
+        # still firing event traces.
+        if kinds and self.cfg.trace.enabled and self.cfg.trace.on_event:
             now = time.time()
             if now - self.probe.last_event_trace >= self.cfg.trace.on_event_cooldown_seconds:
                 self.probe.last_event_trace = now

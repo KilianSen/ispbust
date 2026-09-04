@@ -75,7 +75,8 @@ broken".
 TCP connect and TLS handshake timings are what an application actually feels.
 `traceroute.on_event: true` captures the path the moment loss is detected — a
 traceroute taken afterwards shows nothing, which is why this is triggered
-rather than only scheduled.
+rather than only scheduled. `traceroute.enabled: false` turns off both the
+scheduled and the triggered captures.
 
 ---
 

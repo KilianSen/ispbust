@@ -351,3 +351,41 @@ def test_discovery_accepts_a_genuine_operator_hop(tmp_path):
     collector, ctx, store = _discovery(tmp_path, [("1.1.1.1", "anchor")])
     assert collector.acceptable("62.156.128.1") is True
     store.close()
+
+
+def test_disabled_traceroute_also_disables_event_captures(tmp_path):
+    """`enabled: false` must mean no traceroutes at all.
+
+    CI caught the opposite: a probe with traceroute disabled still fired
+    event-triggered captures, because only the scheduled loop consulted the
+    flag.
+    """
+    import threading
+
+    from ispbust.collectors import IcmpCollector, ProbeContext
+    from ispbust.config import IcmpConfig, ProbeConfig, Target, TraceConfig
+    from ispbust.metrics import Labels
+
+    cfg = ProbeConfig(
+        wan_id="wan-a", label="A", data_dir=tmp_path,
+        icmp=IcmpConfig(targets=[Target(host="1.1.1.1", role="anchor")], event_loss_ratio=0.01),
+        trace=TraceConfig(enabled=False, on_event=True),
+    )
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "wan-a")
+    ctx = ProbeContext(cfg=cfg, store=store, labels=Labels("wan-a", "under_test"),
+                       stop=threading.Event())
+    collector = IcmpCollector(ctx)
+
+    fired = []
+    original = threading.Thread
+    try:
+        threading.Thread = lambda *a, **k: fired.append(k.get("name")) or original(*a, **k)
+        collector.check_event("1.1.1.1", cfg.icmp.targets[0], 0.5,
+                              {"avg": 10.0, "max": 20.0, "p95": 15.0})
+    finally:
+        threading.Thread = original
+
+    assert fired == [], "no traceroute thread should start when traceroute is disabled"
+    events = store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    assert events > 0, "the loss event itself must still be recorded"
+    store.close()
