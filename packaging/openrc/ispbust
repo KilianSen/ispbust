@@ -1,4 +1,8 @@
 #!/sbin/openrc-run
+# shellcheck shell=sh
+# shellcheck disable=SC2034  # these are read by the openrc-run framework,
+# not by this script: name, description, command*, supervisor, respawn_*,
+# output_log, error_log and pidfile are all consumed by OpenRC itself.
 
 name="ispbust"
 description="ispbust per-WAN line quality probe"
