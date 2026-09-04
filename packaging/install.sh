@@ -11,6 +11,12 @@
 # a container runtime is more machinery than the job needs.
 set -eu
 
+# useradd, setcap and getcap live in /usr/sbin, which is not on PATH for a
+# non-login shell or a `su -c` invocation. Without this the script silently
+# skips the capability grant and then fails on useradd.
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+export PATH
+
 REF="${ISPBUST_REF:-master}"
 TARBALL="https://github.com/KilianSen/ispbust/archive/refs/heads/${REF}.tar.gz"
 CONFIG_SRC="${1:-}"
@@ -57,11 +63,21 @@ say "clock: $(date -u '+%Y-%m-%dT%H:%M:%SZ') UTC"
 
 # fping and mtr need raw sockets. Grant the binaries the capability rather than
 # running the probe as root.
+if ! command -v setcap >/dev/null 2>&1; then
+    echo "setcap not found -- install libcap2-bin (Debian) or libcap (Alpine)" >&2
+    exit 1
+fi
 for bin in fping mtr; do
     path="$(command -v "$bin" 2>/dev/null || true)"
-    [ -n "$path" ] || continue
-    setcap cap_net_raw+ep "$path" 2>/dev/null || true
-    say "$bin: $(getcap "$path" 2>/dev/null || echo 'no capability set -- ICMP may fail')"
+    if [ -z "$path" ]; then
+        say "WARNING: $bin is not installed; the matching collector will not run"
+        continue
+    fi
+    if ! setcap cap_net_raw+ep "$path"; then
+        say "WARNING: could not grant cap_net_raw to $path -- ICMP will fail"
+        continue
+    fi
+    say "$bin: $(getcap "$path")"
 done
 
 # ------------------------------------------------------------------ layout
