@@ -154,6 +154,7 @@ ispbust selftest     end-to-end check of analysis and rendering
 src/ispbust/          the tool: collectors, storage, HTTP, analysis, report
   report/             renderer, charts, per-language strings, stylesheet
 docker/               both Dockerfiles, compose stack, Prometheus + Grafana
+packaging/            native install: systemd and OpenRC units, install.sh
 examples/             annotated probe and site configs
 tools/                optional vendor helpers (UniFi discovery, modem probing)
 docs/                 deployment, configuration, escalation, modem diagnostics

@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+
+name="ispbust"
+description="ispbust per-WAN line quality probe"
+
+command="/opt/ispbust/venv/bin/ispbust"
+command_args="probe --config /etc/ispbust/probe.yaml"
+command_user="ispbust:nogroup"
+
+# supervise-daemon restarts the probe if it ever dies. A gap in the record is
+# the first thing an operator's support desk will point at.
+supervisor="supervise-daemon"
+respawn_delay=10
+respawn_max=0
+
+output_log="/var/log/ispbust.log"
+error_log="/var/log/ispbust.log"
+pidfile="/run/ispbust.pid"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    checkpath -f -o ispbust:nogroup -m 0644 "$output_log"
+    checkpath -d -o ispbust:nogroup -m 0755 /var/lib/ispbust /var/lib/ispbust/raw
+}

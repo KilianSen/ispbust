@@ -1,0 +1,32 @@
+[Unit]
+Description=ispbust per-WAN line quality probe
+Documentation=https://github.com/KilianSen/ispbust
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ispbust
+Group=ispbust
+ExecStart=/opt/ispbust/venv/bin/ispbust probe --config /etc/ispbust/probe.yaml
+Restart=always
+RestartSec=5
+
+# A probe that dies leaves a hole in the record, and a hole is the first thing
+# a support desk will point at. Survive memory pressure rather than being the
+# first thing the OOM killer picks.
+OOMPolicy=continue
+OOMScoreAdjust=-500
+
+StateDirectory=ispbust
+ReadWritePaths=/var/lib/ispbust
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

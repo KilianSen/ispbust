@@ -90,7 +90,7 @@ jobs:
       - name: Shell scripts
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-          shellcheck --severity=warning tools/*.sh
+          shellcheck --severity=warning tools/*.sh packaging/install.sh packaging/openrc/ispbust
 
       - name: Compose file and dashboards parse
         run: |

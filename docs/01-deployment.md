@@ -120,11 +120,27 @@ docker run -d --name ispbust-report --restart unless-stopped \
 
 ### Without Docker
 
+Useful on a small VM or a Raspberry Pi that exists only to be a probe, where a
+container runtime is more machinery than the job needs. Handles Debian/Ubuntu
+(apt + systemd) and Alpine (apk + OpenRC), and is idempotent — re-run it to
+upgrade and your config is left alone.
+
 ```bash
-pip install .
-sudo apt install fping mtr-tiny
-ispbust probe --config ./config/probe.under-test.yaml
+git clone https://github.com/KilianSen/ispbust && cd ispbust
+sudo packaging/install.sh config/probe.under-test.yaml
 ```
+
+It installs `fping`, `mtr` and `chrony`, grants the probing binaries
+`cap_net_raw` so the probe itself runs unprivileged, creates a venv under
+`/opt/ispbust`, generates an export token if the config has an empty one,
+installs the service and log rotation, and starts it.
+
+`chrony` is not optional politeness: timestamps are the evidence, and the
+paired comparison buckets by minute, so a probe with an unsynchronised clock
+quietly corrupts the comparison against the other link.
+
+Service units live in [`packaging/`](../packaging) if you would rather install
+by hand.
 
 ---
 
