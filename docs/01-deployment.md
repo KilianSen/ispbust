@@ -165,6 +165,31 @@ Then the test that actually matters:
 Re-run this after every router firmware update. Firmware updates have been
 known to quietly reset policy-route settings.
 
+### IPv6 is probably not pinned, and that changes what the numbers mean
+
+Policy routing on consumer gateways — UniFi included — is usually IPv4-only.
+If your LAN has IPv6, check where it actually goes:
+
+```bash
+# on each probe: which source address does the far end see?
+python3 -c "import urllib.request;print(urllib.request.urlopen('https://api6.ipify.org',timeout=10).read().decode())"
+```
+
+If both probes report an address from the **same** prefix, their IPv6 traffic
+is leaving by the same uplink regardless of the IPv4 pin, and the control link
+is not a control for IPv6. Treat the IPv6 rows as measurements of whichever
+uplink owns that prefix, and lean on the IPv4 comparison for anything you put
+in front of an operator.
+
+There is a sharper consequence if your LAN prefix is delegated from one ISP.
+IPv6 then has **no failover**: an address delegated by operator A cannot be
+routed out of operator B, whose network will drop it at the edge. So when A
+fails, IPv4 fails over and the connection looks alive, while IPv6 stays
+pointed at the dead uplink. Every dual-stack site breaks in the browser —
+users report "the site does not load at all" while every ping still succeeds.
+The `reachability` collector is what makes that visible; see
+[02-configuration.md](02-configuration.md).
+
 ---
 
 ## Check that data is arriving
