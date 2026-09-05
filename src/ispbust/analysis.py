@@ -274,6 +274,63 @@ def hour_of_day_profile(link: LinkData, tz_name: str) -> list:
     } for h in range(24)]
 
 
+def reach_summary(rows: list) -> dict:
+    """Per (host, family): how often a real connection actually completed.
+
+    `resolved == 0` means the family had no record for that host, which is not
+    a fault and is counted separately -- an IPv4-only site must never look like
+    a broken IPv6 path.
+    """
+    by_key: dict = defaultdict(
+        lambda: {"attempts": 0, "ok": 0, "failed": 0, "unresolved": 0,
+                 "errors": {}, "last_address": None, "connect": []})
+    for r in rows:
+        b = by_key[(r["host"], r["family"])]
+        if not r["resolved"]:
+            b["unresolved"] += 1
+            continue
+        b["attempts"] += 1
+        b["last_address"] = r["address"] or b["last_address"]
+        if r["ok"]:
+            b["ok"] += 1
+            if r["connect_s"] is not None:
+                b["connect"].append(r["connect_s"])
+        else:
+            b["failed"] += 1
+            if r["error"]:
+                key = r["error"].split(":")[0]
+                b["errors"][key] = b["errors"].get(key, 0) + 1
+    out = {}
+    for (host, family), b in by_key.items():
+        b["fail_ratio"] = (b["failed"] / b["attempts"]) if b["attempts"] else 0.0
+        b["connect_avg"] = statistics.fmean(b["connect"]) if b["connect"] else None
+        b.pop("connect")
+        out[(host, family)] = b
+    return out
+
+
+def broken_families(summary: dict) -> list:
+    """Hosts where one family works and another resolves but never connects."""
+    hosts: dict = defaultdict(dict)
+    for (host, family), b in summary.items():
+        hosts[host][family] = b
+    findings = []
+    for host, families in sorted(hosts.items()):
+        working = [f for f, b in families.items() if b["attempts"] and b["fail_ratio"] < 0.5]
+        broken = [f for f, b in families.items() if b["attempts"] and b["fail_ratio"] >= 0.5]
+        for family in broken:
+            if working:
+                findings.append({
+                    "host": host, "family": family,
+                    "address": families[family]["last_address"],
+                    "fail_ratio": families[family]["fail_ratio"],
+                    "attempts": families[family]["attempts"],
+                    "working": sorted(working),
+                    "errors": families[family]["errors"],
+                })
+    return findings
+
+
 def dns_summary(rows: list) -> dict:
     by_resolver: dict = defaultdict(
         lambda: {"total": 0, "failed": 0, "nxdomain": 0, "role": "", "durations": []})
@@ -317,6 +374,9 @@ class Analysis:
     traces: list
     first_hop_ips: list
     files: list
+    reach: dict = field(default_factory=dict)
+    reach_control: dict = field(default_factory=dict)
+    reach_broken: list = field(default_factory=list)
     window_seconds: int = 60
 
     @property
@@ -386,6 +446,22 @@ def analyse(site: SiteConfig, databases: dict, date_from: str, date_to: str) -> 
     hop_rows = con.execute(
         "SELECT DISTINCT detail FROM markers WHERE wan = ? AND kind = 'upstream_hop' "
         "AND ts >= ? AND ts < ?", (primary_ref.id, t0, t1)).fetchall()
+    def _reach(wan_id: str, connection) -> list:
+        try:
+            return connection.execute(
+                "SELECT ts, host, port, family, address, resolved, connect_s, tls_s, "
+                "http_status, ok, error FROM reach WHERE wan = ? AND ts >= ? AND ts < ?",
+                (wan_id, t0, t1)).fetchall()
+        except sqlite3.Error:
+            # A probe running an older build has no reach table yet.
+            return []
+
+    reach = reach_summary(_reach(primary_ref.id, con))
+    reach_control = {}
+    if controls and site.controls[0].id in connections:
+        reach_control = reach_summary(
+            _reach(site.controls[0].id, connections[site.controls[0].id]))
+
     window_row = con.execute(
         "SELECT window_s, COUNT(*) AS n FROM icmp WHERE wan = ? AND ts >= ? AND ts < ? "
         "GROUP BY window_s ORDER BY n DESC LIMIT 1", (primary_ref.id, t0, t1)).fetchone()
@@ -424,6 +500,9 @@ def analyse(site: SiteConfig, databases: dict, date_from: str, date_to: str) -> 
         traces=parsed_traces,
         first_hop_ips=sorted({r["detail"] for r in hop_rows if r["detail"]}),
         files=files,
+        reach=reach,
+        reach_control=reach_control,
+        reach_broken=broken_families(reach),
         window_seconds=int(window_row["window_s"] or 60) if window_row else 60,
     )
     for con in connections.values():

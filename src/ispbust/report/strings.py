@@ -207,6 +207,42 @@ STRINGS: dict = {
     "th_p50": {"en": "Response p50", "de": "Antwortzeit p50"},
     "th_p95": {"en": "Response p95", "de": "Antwortzeit p95"},
 
+    # -- reachability by address family ------------------------------------
+    "sr_heading": {
+        "en": "Reachability by address family",
+        "de": "Erreichbarkeit nach Adressfamilie",
+    },
+    "sr_intro": {
+        "en": "A real connection was opened to each site at a fixed interval, separately "
+              "over IPv4 and IPv6. Packet loss measurements alone cannot show this: if one "
+              "address family is unusable, a browser tries it first and the site fails to "
+              "load, while every ping continues to succeed over the other one.",
+        "de": "Zu jeder Website wurde in festem Abstand eine echte Verbindung aufgebaut, "
+              "getrennt über IPv4 und IPv6. Reine Paketverlustmessungen können das nicht "
+              "zeigen: Ist eine Adressfamilie unbrauchbar, versucht ein Browser sie zuerst "
+              "und die Seite lädt nicht, während alle Pings über die andere weiterhin "
+              "erfolgreich sind.",
+    },
+    "sr_finding_title": {
+        "en": "One address family is unusable.",
+        "de": "Eine Adressfamilie ist unbrauchbar.",
+    },
+    "sr_finding_body": {
+        "en": "{host} resolves to {address} over {family}, but {failed} of {attempts} "
+              "connection attempts over {family} failed, while {working} worked normally in "
+              "the same period. Users experience this as the site not loading at all.",
+        "de": "{host} löst über {family} auf {address} auf, jedoch schlugen {failed} von "
+              "{attempts} Verbindungsversuchen über {family} fehl, während {working} im "
+              "selben Zeitraum einwandfrei funktionierte. Nutzer erleben das als "
+              "vollständiges Nichtladen der Seite.",
+    },
+    "th_site": {"en": "Site", "de": "Website"},
+    "th_family": {"en": "Address family", "de": "Adressfamilie"},
+    "th_attempts": {"en": "Attempts", "de": "Versuche"},
+    "th_failed": {"en": "Failed", "de": "Fehlgeschlagen"},
+    "th_connect_avg": {"en": "Connect mean", "de": "Verbindungsaufbau &#8709;"},
+    "th_control_family": {"en": "Reference link", "de": "Referenzleitung"},
+
     # -- section 7: targets -------------------------------------------------
     "s7_heading": {"en": "Individual measurement targets", "de": "Einzelne Messziele"},
     "th_target": {"en": "Target", "de": "Ziel"},

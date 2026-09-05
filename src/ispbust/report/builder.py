@@ -121,6 +121,8 @@ class ReportBuilder:
         self.section_hour_profile()
         if a.dns:
             self.section_dns()
+        if a.reach:
+            self.section_reach()
         self.section_targets()
         if a.traces:
             self.section_traces()
@@ -300,6 +302,43 @@ class ReportBuilder:
         self.table([self.t("th_resolver"), self.t("th_role"), self.t("th_queries"),
                     self.t("th_failures"), self.t("th_fail_rate"),
                     self.t("th_p50"), self.t("th_p95")], rows)
+
+    def section_reach(self) -> None:
+        a = self.a
+        self.heading("sr_heading")
+        self.w("<p>%s</p>" % self.t("sr_intro"))
+
+        for finding in a.reach_broken:
+            self.w('<div class="note"><strong>%s</strong> %s</div>' % (
+                self.t("sr_finding_title"),
+                self.t("sr_finding_body",
+                       host=esc(finding["host"]),
+                       address=esc(finding["address"] or "?"),
+                       family=esc(finding["family"].upper()),
+                       failed=int(round(finding["fail_ratio"] * finding["attempts"])),
+                       attempts=finding["attempts"],
+                       working=esc(", ".join(f.upper() for f in finding["working"])))))
+
+        headers = [self.t("th_site"), self.t("th_family"), self.t("th_address"),
+                   self.t("th_attempts"), self.t("th_failed"), self.t("th_fail_rate"),
+                   self.t("th_connect_avg")]
+        if a.reach_control:
+            headers.append(self.t("th_control_family"))
+        rows = []
+        for (host, family), b in sorted(a.reach.items()):
+            if not b["attempts"]:
+                continue
+            row = [
+                esc(host), esc(family.upper()),
+                "<code>%s</code>" % esc(b["last_address"] or "&ndash;"),
+                b["attempts"], b["failed"], self.loss_cell(b["fail_ratio"]),
+                ("%.0f ms" % (b["connect_avg"] * 1000)) if b["connect_avg"] is not None else "&ndash;",
+            ]
+            if a.reach_control:
+                c = a.reach_control.get((host, family))
+                row.append(pct(c["fail_ratio"]) if c and c["attempts"] else "&ndash;")
+            rows.append(row)
+        self.table(headers, rows)
 
     def section_targets(self) -> None:
         a = self.a

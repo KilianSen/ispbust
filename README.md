@@ -81,6 +81,9 @@ Per uplink, continuously, from identical containers:
   resolvers are broken" is distinguishable from "the line is broken".
 - **TCP connect and TLS handshake** timings — what an application actually
   feels.
+- **Real connections to real sites, per address family** — because loss and
+  reachability are different questions. A dual-stack site on a network with
+  broken IPv6 routing fails in the browser while every ping stays at 0 % loss.
 - **mtr** on a schedule, plus a path snapshot triggered the instant loss
   appears. A traceroute taken afterwards shows nothing.
 

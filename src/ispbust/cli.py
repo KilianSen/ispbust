@@ -70,6 +70,14 @@ def cmd_check(args) -> int:
         print("  dns          : %d resolvers, %d names, every %ds"
               % (len(cfg.dns.resolvers), len(cfg.dns.names), cfg.dns.interval_seconds)
               if cfg.dns.enabled else "  dns          : disabled")
+        if cfg.reach.enabled and cfg.reach.targets:
+            print("  reachability : %d sites over %s every %ds"
+                  % (len(cfg.reach.targets), "+".join(cfg.reach.families),
+                     cfg.reach.interval_seconds))
+            for r in cfg.reach.targets:
+                print("                 %s:%s" % (r["host"], r.get("port", 443)))
+        else:
+            print("  reachability : disabled")
         print("  tcp          : %d targets every %ds"
               % (len(cfg.tcp.targets), cfg.tcp.interval_seconds)
               if cfg.tcp.enabled else "  tcp          : disabled")

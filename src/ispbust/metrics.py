@@ -40,6 +40,16 @@ TCP_FAILURES = Counter(
     "ispbust_tcp_failures", "TCP or TLS handshake failures",
     ["wan", "wan_kind", "target"])
 
+REACH_UP = Gauge(
+    "ispbust_reach_up", "Site reachable over this address family (1) or not (0)",
+    ["wan", "wan_kind", "host", "family"])
+REACH_SECONDS = Gauge(
+    "ispbust_reach_seconds", "Connect or TLS duration for a reachability check",
+    ["wan", "wan_kind", "host", "family", "phase"])
+REACH_ATTEMPTS = Counter(
+    "ispbust_reach_attempts", "Reachability checks by outcome",
+    ["wan", "wan_kind", "host", "family", "outcome"])
+
 EVENTS = Counter(
     "ispbust_events", "Impairment events detected by the probe",
     ["wan", "wan_kind", "kind"])
@@ -85,6 +95,15 @@ class Labels:
 
     def tcp_failures(self, target: str):
         return TCP_FAILURES.labels(self.wan, self.kind, target)
+
+    def reach_up(self, host: str, family: str):
+        return REACH_UP.labels(self.wan, self.kind, host, family)
+
+    def reach_seconds(self, host: str, family: str, phase: str):
+        return REACH_SECONDS.labels(self.wan, self.kind, host, family, phase)
+
+    def reach_attempt(self, host: str, family: str, outcome: str):
+        return REACH_ATTEMPTS.labels(self.wan, self.kind, host, family, outcome)
 
     def events(self, kind: str):
         return EVENTS.labels(self.wan, self.kind, kind)

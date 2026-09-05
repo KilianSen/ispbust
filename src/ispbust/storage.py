@@ -67,12 +67,56 @@ CREATE TABLE IF NOT EXISTS markers (
 );
 CREATE INDEX IF NOT EXISTS markers_ts ON markers(ts);
 
+-- One row per (host, address family) attempt: did the name resolve, did the
+-- connection open, did TLS complete, what did the server say. This is what a
+-- browser actually experiences, and it is the only check that catches a
+-- dual-stack host whose AAAA path is broken while its A path is fine.
+CREATE TABLE IF NOT EXISTS reach (
+  ts TEXT NOT NULL, wan TEXT NOT NULL, host TEXT NOT NULL, port INTEGER,
+  family TEXT NOT NULL, address TEXT, resolved INTEGER,
+  connect_s REAL, tls_s REAL, http_status INTEGER, ok INTEGER, error TEXT
+);
+CREATE INDEX IF NOT EXISTS reach_ts ON reach(ts);
+CREATE INDEX IF NOT EXISTS reach_host ON reach(host, family, ts);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY, value TEXT
 );
 """
 
-TABLES = ("icmp", "dns", "tcp", "trace", "events", "markers")
+TABLES = ("icmp", "dns", "tcp", "trace", "events", "markers", "reach")
+
+# Columns added after the first release. Applied on open so a probe that has
+# been collecting for weeks keeps its history across an upgrade -- re-measuring
+# last month is not an option.
+MIGRATIONS: dict = {
+    "icmp": {"family": "TEXT"},
+    "dns": {"family": "TEXT"},
+    "tcp": {"family": "TEXT"},
+}
+
+
+def migrate(con: sqlite3.Connection) -> list:
+    """Add any columns this version expects but an older database lacks."""
+    added = []
+    for table, columns in MIGRATIONS.items():
+        try:
+            present = {row[1] for row in con.execute("PRAGMA table_info(%s)" % table)}
+        except sqlite3.Error:
+            continue
+        if not present:
+            continue
+        for column, decl in columns.items():
+            if column not in present:
+                try:
+                    con.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, decl))
+                    added.append("%s.%s" % (table, column))
+                except sqlite3.Error as exc:
+                    LOG.error("could not add %s.%s: %s", table, column, exc)
+    if added:
+        con.commit()
+        LOG.info("schema migration added: %s", ", ".join(added))
+    return added
 
 
 def utcnow() -> datetime:
@@ -93,6 +137,7 @@ def open_db(path: Path, read_only: bool = False) -> sqlite3.Connection:
         con.execute("PRAGMA synchronous=NORMAL")
         con.executescript(SCHEMA)
         con.commit()
+        migrate(con)
     con.row_factory = sqlite3.Row
     return con
 

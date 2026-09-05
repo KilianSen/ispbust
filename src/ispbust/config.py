@@ -87,6 +87,23 @@ class TcpConfig:
 
 
 @dataclass
+class ReachConfig:
+    """End-to-end reachability of real sites, over every address family.
+
+    ICMP to an anchor proves the link carries packets. It does not prove a
+    browser can open a page: a host with AAAA records and broken IPv6 routing
+    fails in the browser while every ping stays green. Only an actual
+    connection, per family, catches that.
+    """
+
+    enabled: bool = True
+    interval_seconds: int = 120
+    timeout_seconds: float = 10.0
+    families: list = field(default_factory=lambda: ["ipv4", "ipv6"])
+    targets: list = field(default_factory=list)
+
+
+@dataclass
 class TraceConfig:
     enabled: bool = True
     target: str = "1.1.1.1"
@@ -124,6 +141,7 @@ class ProbeConfig:
     icmp: IcmpConfig = field(default_factory=IcmpConfig)
     dns: DnsConfig = field(default_factory=DnsConfig)
     tcp: TcpConfig = field(default_factory=TcpConfig)
+    reach: ReachConfig = field(default_factory=ReachConfig)
     trace: TraceConfig = field(default_factory=TraceConfig)
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
 
@@ -162,6 +180,15 @@ def load_probe_config(path: Path) -> ProbeConfig:
         if "host" not in t:
             raise ConfigError("every tcp.targets entry needs a 'host'")
 
+    reach_raw = raw.get("reachability") or {}
+    for r in reach_raw.get("targets", []):
+        if "host" not in r:
+            raise ConfigError("every reachability.targets entry needs a 'host'")
+    families = [f.lower() for f in reach_raw.get("families", ["ipv4", "ipv6"])]
+    for fam in families:
+        if fam not in ("ipv4", "ipv6"):
+            raise ConfigError("reachability.families may only contain 'ipv4' and 'ipv6'")
+
     trace_raw = raw.get("traceroute") or {}
     disc_raw = raw.get("upstream_discovery") or {}
 
@@ -193,6 +220,13 @@ def load_probe_config(path: Path) -> ProbeConfig:
             enabled=bool(tcp_raw.get("enabled", True)),
             interval_seconds=int(tcp_raw.get("interval_seconds", 60)),
             targets=list(tcp_raw.get("targets", [])),
+        ),
+        reach=ReachConfig(
+            enabled=bool(reach_raw.get("enabled", True)),
+            interval_seconds=int(reach_raw.get("interval_seconds", 120)),
+            timeout_seconds=float(reach_raw.get("timeout_seconds", 10.0)),
+            families=families,
+            targets=list(reach_raw.get("targets", [])),
         ),
         trace=TraceConfig(
             enabled=bool(trace_raw.get("enabled", True)),

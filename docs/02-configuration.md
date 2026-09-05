@@ -85,6 +85,39 @@ cannot hide a broken resolver. List the operator's resolvers *and* public ones:
 the comparison is what separates "the line is broken" from "their resolvers are
 broken".
 
+### `reachability`
+
+Opens a real connection to real sites, separately over each address family,
+and records what happened: did the name resolve, did the socket connect, did
+TLS complete, what status came back.
+
+This exists because packet loss and reachability are different questions. A
+site with AAAA records, on a network whose IPv6 routing is broken, fails in
+the browser while every ICMP measurement stays at 0 % loss — the browser tries
+IPv6 first, and the pings never did. Nothing else in this tool can see that.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `interval_seconds` | `120` | How often each site is checked. |
+| `timeout_seconds` | `10` | Per-attempt budget, connect and TLS together. |
+| `families` | `[ipv4, ipv6]` | Which address families to try. |
+| `targets[]` | — | `host`, optional `port` (443) and `tls`. |
+
+Two events come out of it:
+
+- **`address_family_broken`** — one family resolves but will not connect while
+  another works. This is the one users feel as "the site doesn't load", and it
+  names the family, the address and the error.
+- **`site_unreachable`** — no family could complete a request.
+
+A family with no record for a host is not a fault and is never reported as
+one: an IPv4-only site is simply IPv4-only.
+
+Resolution deliberately goes to DNS directly rather than through
+`getaddrinfo`. A host whose IPv6 is broken can return "no such record" for an
+AAAA lookup instead of the record, which would make the check go quiet on
+exactly the machine that has the problem.
+
 ### `tcp` and `traceroute`
 
 TCP connect and TLS handshake timings are what an application actually feels.

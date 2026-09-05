@@ -19,7 +19,16 @@ import threading
 import time
 from dataclasses import dataclass
 
-from .config import DiscoveryConfig, DnsConfig, IcmpConfig, ProbeConfig, Target, TcpConfig, TraceConfig
+from .config import (
+    DiscoveryConfig,
+    DnsConfig,
+    IcmpConfig,
+    ProbeConfig,
+    ReachConfig,
+    Target,
+    TcpConfig,
+    TraceConfig,
+)
 from .metrics import Labels
 from .storage import Store, iso
 
@@ -136,21 +145,27 @@ class IcmpCollector(Collector):
     def count(self) -> int:
         return max(1, self.conf.window_seconds * 1000 // self.conf.packet_interval_ms)
 
-    def command(self, hosts: list[str]) -> list[str]:
-        cmd = ["fping", "-C", str(self.count), "-p", str(self.conf.packet_interval_ms),
+    def command(self, hosts: list[str], family: str = "ipv4") -> list[str]:
+        cmd = ["fping", "-6" if family == "ipv6" else "-4",
+               "-C", str(self.count), "-p", str(self.conf.packet_interval_ms),
                "-t", str(self.conf.timeout_ms), "-q", "-B1", "-r0"]
-        if self.cfg.source_ip:
+        if self.cfg.source_ip and family == "ipv4":
             cmd += ["-S", self.cfg.source_ip]
         return cmd + hosts
 
     @staticmethod
     def parse(stderr: str) -> dict:
-        """fping -C writes `1.2.3.4 : 1.23 2.34 - 4.56` to stderr; `-` is a loss."""
+        """fping -C writes `1.2.3.4 : 1.23 2.34 - 4.56` to stderr; `-` is a loss.
+
+        Split on the *last* colon, not the first: an IPv6 target is full of
+        colons and splitting on the first one would truncate the address to
+        its first group and drop every sample for it.
+        """
         out: dict = {}
         for line in stderr.splitlines():
             if ":" not in line:
                 continue
-            host, _, rest = line.partition(":")
+            host, _, rest = line.rpartition(":")
             host = host.strip()
             if not host:
                 continue
@@ -177,18 +192,32 @@ class IcmpCollector(Collector):
         return {"min": round(s[0], 3), "avg": round(avg, 3), "max": round(s[-1], 3),
                 "p95": round(s[idx], 3), "stddev": round(var ** 0.5, 3)}
 
+    @staticmethod
+    def family_of(host: str) -> str:
+        """A literal with a colon is IPv6; anything else goes over IPv4."""
+        return "ipv6" if ":" in host else "ipv4"
+
     def run_once(self) -> None:
         targets = self.probe.targets()
         if not targets:
             self.stop.wait(10)
             return
-        by_host = {t.host: t for t in targets}
-        rc, _, err = run_cmd(self.command(list(by_host)), timeout=self.conf.window_seconds + 30)
+        # fping cannot mix families in one run, so group and run each family
+        # separately. Both share a timestamp so the windows line up.
+        groups: dict = {}
+        for t in targets:
+            groups.setdefault(self.family_of(t.host), {})[t.host] = t
+        ts = iso()
+        for family, by_host in groups.items():
+            self.measure(family, by_host, ts)
+
+    def measure(self, family: str, by_host: dict, ts: str) -> None:
+        rc, _, err = run_cmd(self.command(list(by_host), family),
+                             timeout=self.conf.window_seconds + 30)
         if rc == 127:
             LOG.error("fping is not installed -- the ICMP collector cannot run")
             self.stop.wait(30)
             return
-        ts = iso()
         for host, vals in self.parse(err).items():
             target = by_host.get(host)
             if target is None:
@@ -202,7 +231,7 @@ class IcmpCollector(Collector):
                 "sent": sent, "lost": lost, "loss_ratio": round(ratio, 6),
                 "rtt_min": stats["min"], "rtt_avg": stats["avg"], "rtt_max": stats["max"],
                 "rtt_p95": stats["p95"], "rtt_stddev": stats["stddev"],
-                "window_s": self.conf.window_seconds,
+                "window_s": self.conf.window_seconds, "family": family,
             })
             self.labels.icmp_loss(host, target.role).set(ratio)
             self.labels.icmp_sent(host, target.role).inc(sent)
@@ -371,6 +400,186 @@ class TcpCollector(Collector):
         if not ok:
             self.labels.tcp_failures(host).inc()
             self.probe.record_event("tcp_failure", "anchor", host, error or "")
+
+
+# ------------------------------------------------------------ reachability
+
+
+FAMILIES = {"ipv4": socket.AF_INET, "ipv6": socket.AF_INET6}
+
+
+class ReachCollector(Collector):
+    """Open a real connection to real sites, once per address family.
+
+    ICMP to an anchor proves the link carries packets; it does not prove a
+    browser can load a page. A host with AAAA records on a network whose IPv6
+    routing is broken fails in the browser while every ping stays green,
+    because the browser tries IPv6 first and the pings never did.
+
+    Recording each family separately makes that visible, and the combination
+    "IPv4 fine, IPv6 resolves but will not connect" is reported as its own
+    event -- it is a specific, fixable fault, and one an operator will
+    otherwise insist is imaginary.
+    """
+
+    name = "reach"
+
+    @property
+    def conf(self) -> ReachConfig:
+        return self.cfg.reach
+
+    @property
+    def interval(self) -> float:
+        return self.conf.interval_seconds
+
+    def run_once(self) -> None:
+        for target in self.conf.targets:
+            if self.stop.is_set():
+                return
+            self.check_target(target)
+
+    def check_target(self, target: dict) -> None:
+        host = target["host"]
+        port = int(target.get("port", 443))
+        use_tls = bool(target.get("tls", port == 443))
+        outcomes: dict = {}
+
+        for family_name in self.conf.families:
+            if self.stop.is_set():
+                return
+            outcomes[family_name] = self.check_family(host, port, use_tls, family_name)
+
+        self.compare_families(host, outcomes)
+
+    def check_family(self, host: str, port: int, use_tls: bool, family_name: str) -> dict:
+        family = FAMILIES[family_name]
+        row = {
+            "ts": iso(), "wan": self.cfg.wan_id, "host": host, "port": port,
+            "family": family_name, "address": None, "resolved": 0,
+            "connect_s": None, "tls_s": None, "http_status": None,
+            "ok": None, "error": None,
+        }
+
+        address, why = self.resolve(host, family_name)
+        if address is None:
+            # "This site has no AAAA record" and "this host cannot resolve AAAA
+            # because its IPv6 is broken" are different findings, and the OS
+            # resolver blurs them -- see resolve(). Nothing was attempted here,
+            # so ok stays NULL either way.
+            row["error"] = why
+            self.store.insert("reach", row)
+            self.labels.reach_attempt(host, family_name, "unresolved").inc()
+            return row
+
+        row["address"] = address
+        row["resolved"] = 1
+        sockaddr = (address, port, 0, 0) if family is socket.AF_INET6 else (address, port)
+        sock = None
+        try:
+            started = time.monotonic()
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            sock.settimeout(self.conf.timeout_seconds)
+            if self.cfg.source_ip and family is socket.AF_INET:
+                sock.bind((self.cfg.source_ip, 0))
+            sock.connect(sockaddr)
+            row["connect_s"] = round(time.monotonic() - started, 4)
+
+            stream = sock
+            if use_tls:
+                ctx = ssl.create_default_context()
+                started = time.monotonic()
+                stream = ctx.wrap_socket(sock, server_hostname=host)
+                stream.do_handshake()
+                row["tls_s"] = round(time.monotonic() - started, 4)
+                sock = None
+
+            request = "\r\n".join([
+                "HEAD / HTTP/1.1",
+                "Host: %s" % host,
+                "User-Agent: ispbust",
+                "Connection: close",
+                "", "",
+            ])
+            stream.sendall(request.encode())
+            first_line = stream.recv(200).decode("utf-8", "replace").split("\r\n")[0]
+            parts = first_line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                row["http_status"] = int(parts[1])
+            # Any status at all means the whole path worked. Which status the
+            # site chose to return is its business, not the link's.
+            row["ok"] = 1 if row["http_status"] else 0
+            if not row["http_status"]:
+                row["error"] = "no HTTP status in reply: %r" % first_line[:80]
+            with contextlib.suppress(OSError):
+                stream.close()
+        except Exception as exc:  # noqa: BLE001 - any failure is the data point
+            row["ok"] = 0
+            row["error"] = ("%s: %s" % (type(exc).__name__, exc))[:300]
+        finally:
+            if sock is not None:
+                with contextlib.suppress(OSError):
+                    sock.close()
+
+        self.store.insert("reach", row)
+        outcome = "ok" if row["ok"] else "failed"
+        self.labels.reach_attempt(host, family_name, outcome).inc()
+        self.labels.reach_up(host, family_name).set(1 if row["ok"] else 0)
+        for phase in ("connect_s", "tls_s"):
+            if row[phase] is not None:
+                self.labels.reach_seconds(host, family_name, phase[:-2]).set(row[phase])
+        return row
+
+    def resolve(self, host: str, family_name: str) -> tuple:
+        """Find an address for this family, without asking the OS to choose.
+
+        socket.getaddrinfo() is the obvious tool and the wrong one here. A
+        Windows host with no usable IPv6 route returns WSANO_DATA for an AAAA
+        lookup rather than the record, so the family that is actually broken
+        looks like a family the site does not publish -- the check would go
+        quiet on precisely the machine with the fault. Asking DNS directly
+        keeps "no record" and "cannot reach" apart.
+
+        Falls back to the OS resolver only when dnspython is unavailable.
+        """
+        rdtype = "AAAA" if family_name == "ipv6" else "A"
+        if dns is not None:
+            try:
+                answer = dns.resolver.resolve(host, rdtype)
+                addresses = [r.address for r in answer]
+                if addresses:
+                    return addresses[0], None
+                return None, "no %s record" % rdtype
+            except dns.resolver.NoAnswer:
+                return None, "no %s record" % rdtype
+            except dns.resolver.NXDOMAIN:
+                return None, "NXDOMAIN"
+            except dns.exception.DNSException as exc:
+                return None, "%s lookup failed: %s" % (rdtype, type(exc).__name__)
+
+        family = FAMILIES[family_name]
+        try:
+            infos = socket.getaddrinfo(host, None, family, socket.SOCK_STREAM)
+        except OSError as exc:
+            return None, "%s: %s" % (type(exc).__name__, exc)
+        return (infos[0][4][0], None) if infos else (None, "no %s record" % rdtype)
+
+    def compare_families(self, host: str, outcomes: dict) -> None:
+        """Flag the asymmetric case, which is the one users actually feel."""
+        for family_name, row in outcomes.items():
+            others = [r for name, r in outcomes.items() if name != family_name]
+            if row.get("resolved") and row.get("ok") == 0 and any(o.get("ok") == 1 for o in others):
+                working = ", ".join(sorted(n for n, r in outcomes.items() if r.get("ok") == 1))
+                self.probe.record_event(
+                    "address_family_broken", family_name, host,
+                    "%s resolves to %s but will not connect (%s), while %s works. "
+                    "A browser tries the broken family first, so the site fails to "
+                    "load even though ICMP stays clean."
+                    % (family_name, row.get("address"), row.get("error"), working))
+
+        attempted = [r for r in outcomes.values() if r.get("resolved")]
+        if attempted and all(r.get("ok") == 0 for r in attempted):
+            self.probe.record_event("site_unreachable", "reach", host,
+                                    "no address family could complete a request")
 
 
 # --------------------------------------------------------------- traceroute

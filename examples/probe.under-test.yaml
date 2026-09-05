@@ -102,6 +102,26 @@ tcp:
       port: 443
       tls: true
 
+reachability:
+  # Open a real connection to real sites, once per address family.
+  #
+  # ICMP proves the link carries packets; it does not prove a browser can load
+  # a page. A site with AAAA records on a network whose IPv6 routing is broken
+  # fails in the browser while every ping stays green -- the browser tries IPv6
+  # first, and the pings never did. Only an actual connection per family shows
+  # that, and it is reported as its own event.
+  enabled: true
+  interval_seconds: 120
+  timeout_seconds: 10.0
+  families: [ipv4, ipv6]
+  targets:
+    - host: www.google.com
+      port: 443
+    - host: www.heise.de
+      port: 443
+    - host: cloudflare.com
+      port: 443
+
 traceroute:
   enabled: true
   target: 1.1.1.1

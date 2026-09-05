@@ -519,3 +519,223 @@ def test_make_server_does_not_swallow_other_errors(tmp_path, monkeypatch):
                                token=None, bind_retry_seconds=30)
     assert exc.value.errno == errno.EACCES
     store.close()
+
+
+# ------------------------------------------------------- dual-stack support
+
+
+def test_fping_parse_handles_ipv6_addresses():
+    """Splitting on the first colon would truncate every IPv6 target."""
+    out = IcmpCollector.parse(
+        "1.1.1.1                  : 12.3 11.9 - 12.1\n"
+        "2606:4700:4700::1111     : 14.0 13.8 13.9 14.2\n"
+        "2001:4860:4860::8888     : - - - -\n")
+    assert out["2606:4700:4700::1111"] == [14.0, 13.8, 13.9, 14.2]
+    assert out["2001:4860:4860::8888"] == [None] * 4
+    assert out["1.1.1.1"][2] is None
+
+
+def test_icmp_family_detection_and_flags(tmp_path):
+    import threading
+
+    from ispbust.collectors import IcmpCollector, ProbeContext
+    from ispbust.config import IcmpConfig, ProbeConfig, Target
+    from ispbust.metrics import Labels
+
+    assert IcmpCollector.family_of("1.1.1.1") == "ipv4"
+    assert IcmpCollector.family_of("2606:4700:4700::1111") == "ipv6"
+
+    cfg = ProbeConfig(wan_id="w", label="w", data_dir=tmp_path,
+                      icmp=IcmpConfig(targets=[Target(host="1.1.1.1", role="anchor")]),
+                      source_ip="10.0.0.9")
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "w")
+    ctx = ProbeContext(cfg=cfg, store=store, labels=Labels("w", "under_test"),
+                       stop=threading.Event())
+    c = IcmpCollector(ctx)
+
+    v4 = c.command(["1.1.1.1"], "ipv4")
+    v6 = c.command(["2606:4700:4700::1111"], "ipv6")
+    assert "-4" in v4 and "-6" not in v4
+    assert "-6" in v6 and "-4" not in v6
+    # An IPv4 source address cannot be bound on an IPv6 socket.
+    assert "-S" in v4 and "-S" not in v6
+    store.close()
+
+
+def test_reach_flags_a_family_that_resolves_but_cannot_connect(tmp_path, monkeypatch):
+    """The exact fault that started this: AAAA present, IPv6 unroutable.
+
+    ICMP to IPv4 anchors stays perfectly clean, so nothing else in the tool
+    notices, while a browser trying IPv6 first fails to load the site at all.
+    """
+    import threading
+
+    from ispbust.collectors import ProbeContext, ReachCollector
+    from ispbust.config import ProbeConfig, ReachConfig
+    from ispbust.metrics import Labels
+
+    cfg = ProbeConfig(
+        wan_id="w", label="w", data_dir=tmp_path,
+        reach=ReachConfig(targets=[{"host": "claude.ai", "port": 443}]),
+    )
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "w")
+    ctx = ProbeContext(cfg=cfg, store=store, labels=Labels("w", "under_test"),
+                       stop=threading.Event())
+    collector = ReachCollector(ctx)
+
+    def fake_check(host, port, tls, family_name):
+        if family_name == "ipv4":
+            return {"host": host, "family": "ipv4", "address": "160.79.104.10",
+                    "resolved": 1, "ok": 1, "error": None}
+        return {"host": host, "family": "ipv6", "address": "2607:6bc0::10",
+                "resolved": 1, "ok": 0, "error": "OSError: [Errno 101] Network unreachable"}
+
+    monkeypatch.setattr(collector, "check_family", fake_check)
+    collector.run_once()
+
+    events = list(store.db.execute("SELECT kind, role, target, detail FROM events"))
+    assert len(events) == 1, events
+    kind, role, target, detail = events[0]
+    assert kind == "address_family_broken"
+    assert role == "ipv6"
+    assert target == "claude.ai"
+    assert "ipv4" in detail
+    store.close()
+
+
+def test_reach_stays_quiet_when_both_families_work(tmp_path, monkeypatch):
+    import threading
+
+    from ispbust.collectors import ProbeContext, ReachCollector
+    from ispbust.config import ProbeConfig, ReachConfig
+    from ispbust.metrics import Labels
+
+    cfg = ProbeConfig(wan_id="w", label="w", data_dir=tmp_path,
+                      reach=ReachConfig(targets=[{"host": "example.com"}]))
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "w")
+    ctx = ProbeContext(cfg=cfg, store=store, labels=Labels("w", "under_test"),
+                       stop=threading.Event())
+    collector = ReachCollector(ctx)
+    monkeypatch.setattr(collector, "check_family",
+                        lambda h, p, t, f: {"host": h, "family": f, "resolved": 1, "ok": 1})
+    collector.run_once()
+    assert store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    store.close()
+
+
+def test_reach_ignores_a_family_with_no_records(tmp_path, monkeypatch):
+    """An IPv4-only site is not a fault, and must not be reported as one."""
+    import threading
+
+    from ispbust.collectors import ProbeContext, ReachCollector
+    from ispbust.config import ProbeConfig, ReachConfig
+    from ispbust.metrics import Labels
+
+    cfg = ProbeConfig(wan_id="w", label="w", data_dir=tmp_path,
+                      reach=ReachConfig(targets=[{"host": "v4only.example"}]))
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "w")
+    ctx = ProbeContext(cfg=cfg, store=store, labels=Labels("w", "under_test"),
+                       stop=threading.Event())
+    collector = ReachCollector(ctx)
+
+    def fake_check(host, port, tls, family_name):
+        if family_name == "ipv4":
+            return {"host": host, "family": "ipv4", "resolved": 1, "ok": 1}
+        return {"host": host, "family": "ipv6", "resolved": 0, "ok": None,
+                "error": "no AAAA record"}
+
+    monkeypatch.setattr(collector, "check_family", fake_check)
+    collector.run_once()
+    assert store.db.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    store.close()
+
+
+def test_migration_adds_columns_to_an_older_database(tmp_path):
+    """A probe that has been collecting for weeks must keep its history."""
+    import sqlite3
+
+    from ispbust.storage import migrate
+
+    path = tmp_path / "old.sqlite"
+    con = sqlite3.connect(str(path))
+    con.execute("CREATE TABLE icmp (ts TEXT NOT NULL, wan TEXT, target TEXT, role TEXT, "
+                "sent INTEGER, lost INTEGER, loss_ratio REAL, rtt_min REAL, rtt_avg REAL, "
+                "rtt_max REAL, rtt_p95 REAL, rtt_stddev REAL, window_s INTEGER)")
+    con.execute("INSERT INTO icmp (ts, wan, target, role, sent, lost) "
+                "VALUES ('2026-09-01T10:00:00.000Z','w','1.1.1.1','anchor',60,0)")
+    con.commit()
+
+    added = migrate(con)
+    assert "icmp.family" in added
+    cols = {r[1] for r in con.execute("PRAGMA table_info(icmp)")}
+    assert "family" in cols
+    assert con.execute("SELECT COUNT(*) FROM icmp").fetchone()[0] == 1, "history must survive"
+    assert migrate(con) == [], "migration must be idempotent"
+    con.close()
+
+
+def test_reach_resolution_does_not_trust_the_os_family_filter(tmp_path, monkeypatch):
+    """A host with broken IPv6 must not look like a site without AAAA.
+
+    Windows returns WSANO_DATA for an AAAA lookup when it has no usable IPv6
+    route, so getaddrinfo(AF_INET6) reports "no such record" on exactly the
+    machine that is broken. Resolution therefore goes to DNS directly.
+    """
+    import socket
+    import threading
+
+    from ispbust.collectors import ProbeContext, ReachCollector
+    from ispbust.config import ProbeConfig, ReachConfig
+    from ispbust.metrics import Labels
+
+    cfg = ProbeConfig(wan_id="w", label="w", data_dir=tmp_path,
+                      reach=ReachConfig(targets=[{"host": "claude.ai"}]))
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "w")
+    ctx = ProbeContext(cfg=cfg, store=store, labels=Labels("w", "under_test"),
+                       stop=threading.Event())
+    collector = ReachCollector(ctx)
+
+    def exploding_getaddrinfo(*a, **k):
+        raise OSError(11004, "getaddrinfo failed")
+
+    monkeypatch.setattr(socket, "getaddrinfo", exploding_getaddrinfo)
+
+    class FakeRecord:
+        def __init__(self, address):
+            self.address = address
+
+    def fake_resolve(name, rdtype):
+        return [FakeRecord("2607:6bc0::10" if rdtype == "AAAA" else "160.79.104.10")]
+
+    from ispbust import collectors
+    monkeypatch.setattr(collectors.dns.resolver, "resolve", fake_resolve)
+
+    address, why = collector.resolve("claude.ai", "ipv6")
+    assert address == "2607:6bc0::10", "must ask DNS, not the OS resolver"
+    assert why is None
+    store.close()
+
+
+def test_reach_reports_a_genuinely_absent_record_as_absent(tmp_path, monkeypatch):
+    import threading
+
+    from ispbust import collectors
+    from ispbust.collectors import ProbeContext, ReachCollector
+    from ispbust.config import ProbeConfig, ReachConfig
+    from ispbust.metrics import Labels
+
+    cfg = ProbeConfig(wan_id="w", label="w", data_dir=tmp_path,
+                      reach=ReachConfig(targets=[{"host": "v4only.example"}]))
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "w")
+    ctx = ProbeContext(cfg=cfg, store=store, labels=Labels("w", "under_test"),
+                       stop=threading.Event())
+    collector = ReachCollector(ctx)
+
+    def no_answer(name, rdtype):
+        raise collectors.dns.resolver.NoAnswer()
+
+    monkeypatch.setattr(collectors.dns.resolver, "resolve", no_answer)
+    address, why = collector.resolve("v4only.example", "ipv6")
+    assert address is None
+    assert why == "no AAAA record"
+    store.close()
