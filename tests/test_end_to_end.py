@@ -994,3 +994,20 @@ def test_audit_is_inert_without_both_kinds_of_target(tmp_path):
     assert collector.audit_first_hop(anchors_only) == set()
     assert collector.audit_first_hop({}) == set()
     store.close()
+
+
+def test_dropping_a_hop_removes_its_metric_series(tmp_path):
+    """A gauge keeps its last value for ever, so a dropped target would show a
+    permanent 100% loss on a dashboard for something nobody measures."""
+    from prometheus_client import generate_latest
+
+    collector, ctx, store = _icmp(tmp_path)
+    ctx.first_hop = "100.64.0.1"
+    collector.labels.icmp_loss("100.64.0.1", "isp_first_hop").set(1.0)
+    assert b'target="100.64.0.1"' in generate_latest()
+
+    for _ in range(collector.FIRST_HOP_STRIKES):
+        collector.audit_first_hop(_window(1.0, 0.0))
+
+    assert b'target="100.64.0.1"' not in generate_latest()
+    store.close()

@@ -339,6 +339,7 @@ class IcmpCollector(Collector):
                 "rather than a fault. It has been dropped so it cannot contribute a "
                 "false figure; the scheduled traceroutes still record per-hop loss for "
                 "it." % (strikes, anchor_loss * 100))
+            self.labels.drop_icmp_target(host, self.cfg.discovery.role)
             self.probe.set_dynamic([])
             self.probe.first_hop = None
         return suspect

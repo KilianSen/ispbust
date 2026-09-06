@@ -88,6 +88,19 @@ class Labels:
     def icmp_sent(self, target: str, role: str):
         return ICMP_SENT.labels(self.wan, self.kind, target, role)
 
+    def drop_icmp_target(self, target: str, role: str) -> None:
+        """Remove a target's series when it stops being measured.
+
+        A gauge keeps reporting its last value for ever, so a dropped target
+        would sit on a dashboard showing a permanent 100 % loss for something
+        nobody is measuring any more.
+        """
+        for metric, extra in ((ICMP_LOSS, ()), (ICMP_SENT, ()), (ICMP_LOST, ()),
+                              *[(ICMP_RTT, (stat,)) for stat in
+                                ("min", "avg", "max", "p95", "stddev")]):
+            with contextlib.suppress(KeyError):
+                metric.remove(self.wan, self.kind, target, role, *extra)
+
     def icmp_lost(self, target: str, role: str):
         return ICMP_LOST.labels(self.wan, self.kind, target, role)
 
