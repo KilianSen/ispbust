@@ -99,6 +99,7 @@ class ProbeContext:
     dynamic_targets: list = None
     lock: threading.Lock = None
     last_event_trace: float = 0.0
+    first_hop: str | None = None
 
     def __post_init__(self) -> None:
         if self.dynamic_targets is None:
@@ -795,11 +796,17 @@ class DiscoveryCollector(Collector):
 
     name = "discovery"
 
+    # Validated at the rate the collector will actually probe it. A burst of
+    # five packets sails through a policer that a sustained stream does not,
+    # which is exactly how an unusable hop got adopted here.
+    MIN_VALIDATION_PACKETS = 10
+    MIN_REPLY_RATIO = 0.5
+
     def __init__(self, probe: ProbeContext):
         super().__init__(probe)
         self.current: str | None = None
-        # Hops that answer traceroute but not echo, so the warning is logged
-        # once per address rather than every hour.
+        # Hops that cannot be measured, so the warning is logged once per
+        # address rather than every cycle.
         self.silent: set = set()
 
     @property
@@ -811,6 +818,10 @@ class DiscoveryCollector(Collector):
         return self.conf.interval_seconds
 
     def run_once(self) -> None:
+        # A hop adopted earlier can start policing ICMP later, so re-check
+        # the one already in use before looking for a new one.
+        self.revalidate()
+
         hops = TraceCollector(self.probe).mtr(self.conf.via, 3)
         ip = None
         for hop in hops:
@@ -824,16 +835,16 @@ class DiscoveryCollector(Collector):
             return
         if not self.acceptable(ip):
             return
-        if not self.responds_to_echo(ip):
+        usable, reason = self.usable_as_target(ip)
+        if not usable:
             if ip not in self.silent:
                 self.silent.add(ip)
                 LOG.warning(
-                    "discovered hop %s answers traceroute but not ICMP echo -- NOT probing "
-                    "it. Measuring it would record a permanent 100%% loss that is an "
-                    "artefact of the router's ICMP policy, not a fault. The report will "
-                    "omit the first-hop section; the scheduled traceroutes still capture "
-                    "per-hop loss for this address.", ip)
-                self.store.marker("upstream_hop_no_echo", ip)
+                    "not probing discovered hop %s: %s. Measuring it would record loss "
+                    "that is an artefact of the router's ICMP handling rather than a "
+                    "fault, so the report omits the first-hop section; the scheduled "
+                    "traceroutes still capture per-hop loss for this address.", ip, reason)
+                self.store.marker("upstream_hop_unusable", "%s: %s" % (ip, reason))
             return
         self.silent.discard(ip)
 
@@ -846,30 +857,73 @@ class DiscoveryCollector(Collector):
         self.labels.upstream_hop(ip).set(1)
         self.probe.set_dynamic([Target(host=ip, role=self.conf.role,
                                        note="auto-discovered ISP next hop")])
+        self.probe.first_hop = ip
         self.store.marker("upstream_hop", ip)
 
-    def responds_to_echo(self, ip: str) -> bool:
-        """Does this hop actually answer pings?
+    def usable_as_target(self, ip: str) -> tuple:
+        """Can this hop be measured, at the rate the collector will measure it?
 
-        Plenty of operator routers reply to TTL-exceeded (so they appear in a
-        traceroute) while dropping ICMP echo addressed to themselves. Probing
-        such a hop records 100 % loss forever -- an artefact of its ICMP policy,
-        not a fault. Putting that number in front of an operator would be worse
-        than useless, so the candidate has to prove it answers first.
+        Two ways a hop looks fine and is not. Some operator routers reply to
+        TTL-exceeded -- so they appear in a traceroute -- while dropping echo
+        addressed to themselves. Others answer a short burst and then police
+        the rest: a satellite gateway seen here replied to exactly one packet
+        of sixty and dropped the other fifty-nine, while traffic *through* it
+        lost nothing at all.
+
+        Either way the probe would record near-total loss on a healthy link,
+        and that number would be the strongest-looking claim in the report and
+        the easiest for an operator to disprove. So the candidate is tested at
+        the rate it will actually be probed, and has to answer most of it.
+
+        Returns (usable, reason).
         """
-        # -C (not -c): the uppercase form prints one RTT per packet, which is
-        # what IcmpCollector.parse understands. The lowercase form prints only a
-        # summary line, which the parser finds no numbers in -- so every host
-        # would look silent.
-        cmd = ["fping", "-C", "5", "-p", "300", "-t", "1000", "-q", "-r0"]
+        count = max(self.MIN_VALIDATION_PACKETS, 1)
+        cmd = ["fping", "-C", str(count),
+               "-p", str(self.cfg.icmp.packet_interval_ms),
+               "-t", str(self.cfg.icmp.timeout_ms), "-q", "-r0"]
         if self.cfg.source_ip:
             cmd += ["-S", self.cfg.source_ip]
-        rc, _, err = run_cmd(cmd + [ip], timeout=30)
+        rc, _, err = run_cmd(cmd + [ip], timeout=count * 3 + 30)
         if rc == 127:
-            return False
-        replies = IcmpCollector.parse(err).get(ip, [])
-        return any(v is not None for v in replies)
+            return False, "fping is not installed"
 
+        replies = IcmpCollector.parse(err).get(ip, [])
+        if not replies:
+            return False, "no reply to any of %d echo requests" % count
+        answered = sum(1 for v in replies if v is not None)
+        ratio = answered / len(replies)
+        if answered == 0:
+            return False, ("answers traceroute but not ICMP echo "
+                           "(0 of %d replies)" % len(replies))
+        if ratio < self.MIN_REPLY_RATIO:
+            return False, ("rate-limits ICMP: only %d of %d echo requests answered "
+                           "at %d ms spacing, so measured loss would be an artefact "
+                           "of its policing rather than a fault"
+                           % (answered, len(replies), self.cfg.icmp.packet_interval_ms))
+        return True, None
+
+    def revalidate(self) -> None:
+        """Re-check the hop already adopted, and drop it if it stopped being usable.
+
+        A hop that answered when it was adopted can start policing later. Left
+        alone it produces a permanent, entirely false total-loss reading.
+        """
+        current = self.probe.first_hop
+        if not current:
+            return
+        usable, reason = self.usable_as_target(current)
+        if usable:
+            return
+        LOG.warning("dropping first hop %s: %s", current, reason)
+        self.store.marker("upstream_hop_dropped", "%s: %s" % (current, reason))
+        self.probe.record_event(
+            "upstream_hop_unmeasurable", self.conf.role, current,
+            "no longer usable as a measurement target -- %s. It has been dropped so "
+            "it cannot contribute a false loss figure; the scheduled traceroutes "
+            "still record per-hop loss for it." % reason)
+        self.probe.set_dynamic([])
+        self.probe.first_hop = None
+        self.silent.add(current)
     def acceptable(self, ip: str) -> bool:
         """Reject a discovered hop that would corrupt the target set.
 

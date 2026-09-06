@@ -420,7 +420,7 @@ def test_discovery_skips_a_hop_that_does_not_answer_echo(tmp_path, monkeypatch):
 
     def fake_run(cmd, timeout):
         seen["cmd"] = cmd
-        return (1, "", "100.124.1.27 : - - - - -\n")
+        return (1, "", "100.124.1.27 : " + " ".join(["-"] * 10) + "\n")
 
     monkeypatch.setattr(collectors, "run_cmd", fake_run)
 
@@ -428,13 +428,15 @@ def test_discovery_skips_a_hop_that_does_not_answer_echo(tmp_path, monkeypatch):
 
     assert "-C" in seen["cmd"], "must request per-packet output, not a summary"
     assert ctx.dynamic_targets == [], "a silent hop must not become a probe target"
-    kinds = [r[0] for r in store.db.execute("SELECT kind FROM markers")]
-    assert "upstream_hop_no_echo" in kinds, "the reason must be recorded"
+    detail = store.db.execute(
+        "SELECT detail FROM markers WHERE kind='upstream_hop_unusable'").fetchone()
+    assert detail, "the reason must be recorded"
+    assert "not ICMP echo" in detail[0]
 
     # Repeating must not spam the marker table.
     collector.run_once()
-    again = [r[0] for r in store.db.execute(
-        "SELECT kind FROM markers WHERE kind='upstream_hop_no_echo'")]
+    again = list(store.db.execute(
+        "SELECT kind FROM markers WHERE kind='upstream_hop_unusable'"))
     assert len(again) == 1
     store.close()
 
@@ -811,4 +813,85 @@ def test_icmp_single_family_takes_the_direct_path(tmp_path):
 
     assert len(seen) == 1 and seen[0][0] == "ipv4"
     assert seen[0][1] == threading.current_thread().name, "should run inline"
+    store.close()
+
+
+def test_a_rate_limited_hop_is_rejected(tmp_path, monkeypatch):
+    """Observed live: a gateway answered 1 of 60 pings while traffic through it
+    lost nothing. Adopting it recorded ~98% loss on a healthy link -- the
+    strongest-looking claim in the report and the easiest to disprove."""
+    from ispbust import collectors
+
+    collector, ctx, store = _discovery(tmp_path, [("1.1.1.1", "anchor")])
+    monkeypatch.setattr(collectors.TraceCollector, "mtr",
+                        lambda self, target, cycles: [{"count": 2, "host": "100.64.0.1"}])
+    # One reply, then policed.
+    replies = "15.4 " + " ".join(["-"] * 9)
+    monkeypatch.setattr(collectors, "run_cmd",
+                        lambda cmd, timeout: (1, "", "100.64.0.1 : %s\n" % replies))
+
+    collector.run_once()
+
+    assert ctx.dynamic_targets == [], "a policed hop must not become a target"
+    detail = store.db.execute(
+        "SELECT detail FROM markers WHERE kind='upstream_hop_unusable'").fetchone()
+    assert detail and "rate-limits" in detail[0]
+    store.close()
+
+
+def test_validation_probes_at_the_configured_rate(tmp_path, monkeypatch):
+    """A five-packet burst passes a policer that a sustained stream does not,
+    so the check has to use the interval the collector will really use."""
+    from ispbust import collectors
+
+    collector, ctx, store = _discovery(tmp_path, [("1.1.1.1", "anchor")])
+    ctx.cfg.icmp.packet_interval_ms = 1000
+    seen = {}
+
+    def fake(cmd, timeout):
+        seen["cmd"] = cmd
+        return (0, "", "9.9.9.9 : " + " ".join(["1.2"] * 10) + "\n")
+
+    monkeypatch.setattr(collectors, "run_cmd", fake)
+    usable, reason = collector.usable_as_target("9.9.9.9")
+
+    assert usable and reason is None
+    assert "-p" in seen["cmd"] and "1000" in seen["cmd"], seen["cmd"]
+    assert "10" in seen["cmd"], "must send enough packets to trip a policer"
+    store.close()
+
+
+def test_a_hop_that_starts_policing_later_is_dropped(tmp_path, monkeypatch):
+    """Validation at adoption is not enough: a hop can start policing after."""
+    from ispbust import collectors
+
+    collector, ctx, store = _discovery(tmp_path, [("1.1.1.1", "anchor")])
+    ctx.first_hop = "100.64.0.1"
+    ctx.set_dynamic([collectors.Target(host="100.64.0.1", role="isp_first_hop")])
+    monkeypatch.setattr(collectors, "run_cmd",
+                        lambda cmd, timeout: (1, "", "100.64.0.1 : " + " ".join(["-"] * 10) + "\n"))
+
+    collector.revalidate()
+
+    assert ctx.dynamic_targets == []
+    assert ctx.first_hop is None
+    kinds = [r[0] for r in store.db.execute("SELECT kind FROM events")]
+    assert "upstream_hop_unmeasurable" in kinds
+    store.close()
+
+
+def test_a_healthy_hop_survives_revalidation(tmp_path, monkeypatch):
+    from ispbust import collectors
+
+    collector, ctx, store = _discovery(tmp_path, [("1.1.1.1", "anchor")])
+    ctx.first_hop = "62.156.128.1"
+    target = collectors.Target(host="62.156.128.1", role="isp_first_hop")
+    ctx.set_dynamic([target])
+    monkeypatch.setattr(collectors, "run_cmd",
+                        lambda cmd, timeout: (0, "", "62.156.128.1 : " + " ".join(["1.2"] * 10) + "\n"))
+
+    collector.revalidate()
+
+    assert ctx.dynamic_targets == [target], "a usable hop must be kept"
+    assert ctx.first_hop == "62.156.128.1"
     store.close()
