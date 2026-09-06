@@ -79,12 +79,23 @@ CREATE TABLE IF NOT EXISTS reach (
 CREATE INDEX IF NOT EXISTS reach_ts ON reach(ts);
 CREATE INDEX IF NOT EXISTS reach_host ON reach(host, family, ts);
 
+-- Which public address this probe actually left by. A probe pinned to one
+-- uplink that quietly fails over to another keeps reporting a healthy line
+-- during the outage it exists to record, so every other number here depends
+-- on this one.
+CREATE TABLE IF NOT EXISTS egress (
+  ts TEXT NOT NULL, wan TEXT NOT NULL, family TEXT NOT NULL,
+  address TEXT, expected TEXT, ok INTEGER, endpoint TEXT, error TEXT
+);
+CREATE INDEX IF NOT EXISTS egress_ts ON egress(ts);
+CREATE INDEX IF NOT EXISTS egress_ok ON egress(ok, ts);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY, value TEXT
 );
 """
 
-TABLES = ("icmp", "dns", "tcp", "trace", "events", "markers", "reach")
+TABLES = ("icmp", "dns", "tcp", "trace", "events", "markers", "reach", "egress")
 
 # Columns added after the first release. Applied on open so a probe that has
 # been collecting for weeks keeps its history across an upgrade -- re-measuring
@@ -186,6 +197,28 @@ class Store:
 
     def marker(self, kind: str, detail: str) -> None:
         self.insert("markers", {"ts": iso(), "wan": self.wan, "kind": kind, "detail": detail})
+
+    # -- small persistent key/value -----------------------------------
+
+    def get_meta(self, key: str, default: str | None = None) -> str | None:
+        """Survives restarts, which is the point: a baseline relearned on every
+        start would silently adopt whatever the link was doing at that moment."""
+        with self.lock:
+            try:
+                row = self.db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+            except sqlite3.Error as exc:
+                LOG.error("meta read failed: %s", exc)
+                return default
+        return row["value"] if row else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self.lock:
+            try:
+                self.db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
+                                (key, value))
+                self.db.commit()
+            except sqlite3.Error as exc:
+                LOG.error("meta write failed: %s", exc)
 
     # -- housekeeping -------------------------------------------------
 

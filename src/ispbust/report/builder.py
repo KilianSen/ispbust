@@ -114,6 +114,8 @@ class ReportBuilder:
 
         self.kpis()
         self.section_summary()
+        if a.egress and a.egress.get("checks"):
+            self.section_integrity()
         self.section_daily()
         self.section_outages()
         if a.cycle:
@@ -191,6 +193,43 @@ class ReportBuilder:
                 "s1_first_hop",
                 loss=pct(a.primary.loss_ratio("first_hop")),
                 hops=esc(", ".join(a.first_hop_ips) or "?")))
+
+    def section_integrity(self) -> None:
+        """Placed immediately after the summary on purpose.
+
+        A reader is entitled to know the measurements describe the connection
+        named on the front page before being asked to accept any of them.
+        """
+        a = self.a
+        e = a.egress
+        self.heading("si_heading")
+        self.w("<p>%s</p>" % self.t("si_intro"))
+
+        graded = e["confirmed"] + e["leaked"]
+        if graded:
+            self.w("<p>%s</p>" % self.t(
+                "si_confirmed", confirmed=e["confirmed"], graded=graded,
+                ratio=pct(e["confirmed_ratio"] or 0.0),
+                expected=esc(e["expected"] or "&ndash;")))
+
+        if e["leaked"]:
+            self.w('<div class="note"><strong>%s</strong> %s</div>' % (
+                self.t("si_leak_title"), self.t("si_leak_body")))
+            rows = []
+            for window in e["windows"]:
+                rows.append([
+                    self.local(parse_minute(window["start"][:16])),
+                    self.local(parse_minute(window["end"][:16])),
+                    "<code>%s</code>" % esc(window["address"] or "?"),
+                    window["checks"],
+                ])
+            self.table([self.t("th_start"), self.t("th_end"),
+                        self.t("th_observed_address"), self.t("th_checks")], rows)
+        elif graded:
+            self.w("<p>%s</p>" % self.t("si_clean"))
+
+        if e["unknown"]:
+            self.w('<p class="method">%s</p>' % self.t("si_unknown", count=e["unknown"]))
 
     def section_daily(self) -> None:
         a = self.a

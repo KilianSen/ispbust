@@ -207,6 +207,57 @@ STRINGS: dict = {
     "th_p50": {"en": "Response p50", "de": "Antwortzeit p50"},
     "th_p95": {"en": "Response p95", "de": "Antwortzeit p95"},
 
+    # -- measurement integrity ---------------------------------------------
+    "si_heading": {
+        "en": "Integrity of the measurement",
+        "de": "Integrität der Messung",
+    },
+    "si_intro": {
+        "en": "Throughout the period the probe repeatedly confirmed, against independent "
+              "external services, which public address its own traffic arrived from. This "
+              "verifies that the measurements below describe the connection named in this "
+              "report and not some other one.",
+        "de": "Während des gesamten Zeitraums hat die Messsonde wiederholt gegen "
+              "unabhängige externe Dienste geprüft, von welcher öffentlichen Adresse ihr "
+              "eigener Datenverkehr eintraf. Damit ist belegt, dass sich die folgenden "
+              "Messwerte auf den in diesem Bericht genannten Anschluss beziehen und nicht "
+              "auf einen anderen.",
+    },
+    "si_confirmed": {
+        "en": "{confirmed} of {graded} checks confirmed the expected connection "
+              "({ratio}). Expected range: {expected}.",
+        "de": "{confirmed} von {graded} Prüfungen bestätigten den erwarteten Anschluss "
+              "({ratio}). Erwarteter Bereich: {expected}.",
+    },
+    "si_clean": {
+        "en": "No deviation was observed at any point in the period.",
+        "de": "Im gesamten Zeitraum wurde keine Abweichung festgestellt.",
+    },
+    "si_leak_title": {
+        "en": "Measurements in these periods describe a different connection.",
+        "de": "Messwerte in diesen Zeiträumen beziehen sich auf einen anderen Anschluss.",
+    },
+    "si_leak_body": {
+        "en": "During the periods listed below the probe's traffic left by an address "
+              "outside the expected range, so the router had moved it to another uplink. "
+              "Figures covering these periods do not describe the connection under "
+              "investigation and should be disregarded.",
+        "de": "In den unten aufgeführten Zeiträumen verließ der Datenverkehr der Messsonde "
+              "das Netz über eine Adresse außerhalb des erwarteten Bereichs; der Router "
+              "hatte sie auf einen anderen Anschluss umgeleitet. Werte aus diesen "
+              "Zeiträumen beschreiben nicht den geprüften Anschluss und sind "
+              "unberücksichtigt zu lassen.",
+    },
+    "si_unknown": {
+        "en": "{count} checks could not be completed, which is expected while the "
+              "connection is down and is counted separately from both outcomes.",
+        "de": "{count} Prüfungen konnten nicht durchgeführt werden. Das ist bei einem "
+              "ausgefallenen Anschluss zu erwarten und wird von beiden Ergebnissen "
+              "getrennt gezählt.",
+    },
+    "th_observed_address": {"en": "Observed address", "de": "Beobachtete Adresse"},
+    "th_checks": {"en": "Checks", "de": "Prüfungen"},
+
     # -- reachability by address family ------------------------------------
     "sr_heading": {
         "en": "Reachability by address family",

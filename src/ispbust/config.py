@@ -39,6 +39,20 @@ def _load_yaml(path: Path) -> dict:
     return data
 
 
+def _seq(raw: dict, key: str) -> list:
+    """A YAML key with nothing but comments under it parses as None, not [].
+
+    That is an easy thing to write by hand -- the shipped examples did it --
+    so treat a null sequence as an empty one instead of failing on it.
+    """
+    value = raw.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError("%s must be a list, got %s" % (key, type(value).__name__))
+    return list(value)
+
+
 def _env(name: str, default: Any = None) -> Any:
     """Environment overrides let a container be configured without a file edit."""
     return os.environ.get("ISPBUST_" + name, default)
@@ -104,6 +118,34 @@ class ReachConfig:
 
 
 @dataclass
+class EgressConfig:
+    """Confirm the probe is still leaving by the uplink it is supposed to.
+
+    This is the check the rest of the tool rests on. A probe pinned to one
+    uplink whose router quietly fails it over to the other keeps reporting a
+    healthy line throughout the outage it was deployed to record -- and the
+    numbers look completely normal, which is what makes it dangerous.
+    """
+
+    enabled: bool = True
+    interval_seconds: int = 300
+    timeout_seconds: float = 10.0
+    families: list = field(default_factory=lambda: ["ipv4"])
+    # Authoritative when set. Without it the first successful observation is
+    # taken as the baseline, which is convenient but assumes the pin was
+    # correct at that moment -- so prefer stating it.
+    expected_prefixes: list = field(default_factory=list)
+    endpoints: dict = field(default_factory=lambda: {
+        "ipv4": ["https://api.ipify.org", "https://icanhazip.com", "https://ifconfig.me/ip"],
+        "ipv6": ["https://api6.ipify.org", "https://icanhazip.com"],
+    })
+    # Width used to compare a learned baseline, so a normal address change
+    # inside the operator's range is not mistaken for a failover.
+    match_prefix_ipv4: int = 24
+    match_prefix_ipv6: int = 48
+
+
+@dataclass
 class TraceConfig:
     enabled: bool = True
     target: str = "1.1.1.1"
@@ -142,6 +184,7 @@ class ProbeConfig:
     dns: DnsConfig = field(default_factory=DnsConfig)
     tcp: TcpConfig = field(default_factory=TcpConfig)
     reach: ReachConfig = field(default_factory=ReachConfig)
+    egress: EgressConfig = field(default_factory=EgressConfig)
     trace: TraceConfig = field(default_factory=TraceConfig)
     discovery: DiscoveryConfig = field(default_factory=DiscoveryConfig)
 
@@ -168,26 +211,38 @@ def load_probe_config(path: Path) -> ProbeConfig:
         raise ConfigError("wan.kind must be '%s' or '%s', got %r" % (UNDER_TEST, CONTROL, kind))
 
     icmp_raw = raw.get("icmp") or {}
-    targets = [Target(**t) for t in icmp_raw.get("targets", [])]
+    targets = [Target(**t) for t in _seq(icmp_raw, "targets")]
 
     dns_raw = raw.get("dns") or {}
-    for r in dns_raw.get("resolvers", []):
+    for r in _seq(dns_raw, "resolvers"):
         if "ip" not in r:
             raise ConfigError("every dns.resolvers entry needs an 'ip'")
 
     tcp_raw = raw.get("tcp") or {}
-    for t in tcp_raw.get("targets", []):
+    for t in _seq(tcp_raw, "targets"):
         if "host" not in t:
             raise ConfigError("every tcp.targets entry needs a 'host'")
 
     reach_raw = raw.get("reachability") or {}
-    for r in reach_raw.get("targets", []):
+    for r in _seq(reach_raw, "targets"):
         if "host" not in r:
             raise ConfigError("every reachability.targets entry needs a 'host'")
-    families = [f.lower() for f in reach_raw.get("families", ["ipv4", "ipv6"])]
+    families = [f.lower() for f in (reach_raw.get("families") or ["ipv4", "ipv6"])]
     for fam in families:
         if fam not in ("ipv4", "ipv6"):
             raise ConfigError("reachability.families may only contain 'ipv4' and 'ipv6'")
+
+    egress_raw = raw.get("egress") or {}
+    egress_families = [f.lower() for f in (egress_raw.get("families") or ["ipv4"])]
+    for fam in egress_families:
+        if fam not in ("ipv4", "ipv6"):
+            raise ConfigError("egress.families may only contain 'ipv4' and 'ipv6'")
+    import ipaddress as _ipaddress
+    for cidr in _seq(egress_raw, "expected_prefixes"):
+        try:
+            _ipaddress.ip_network(cidr, strict=False)
+        except ValueError as exc:
+            raise ConfigError("egress.expected_prefixes: %r is not a network: %s" % (cidr, exc)) from exc
 
     trace_raw = raw.get("traceroute") or {}
     disc_raw = raw.get("upstream_discovery") or {}
@@ -213,20 +268,30 @@ def load_probe_config(path: Path) -> ProbeConfig:
             enabled=bool(dns_raw.get("enabled", True)),
             interval_seconds=int(dns_raw.get("interval_seconds", 15)),
             timeout_seconds=float(dns_raw.get("timeout_seconds", 3.0)),
-            names=list(dns_raw.get("names", [])),
-            resolvers=list(dns_raw.get("resolvers", [])),
+            names=_seq(dns_raw, "names"),
+            resolvers=_seq(dns_raw, "resolvers"),
         ),
         tcp=TcpConfig(
             enabled=bool(tcp_raw.get("enabled", True)),
             interval_seconds=int(tcp_raw.get("interval_seconds", 60)),
-            targets=list(tcp_raw.get("targets", [])),
+            targets=_seq(tcp_raw, "targets"),
         ),
         reach=ReachConfig(
             enabled=bool(reach_raw.get("enabled", True)),
             interval_seconds=int(reach_raw.get("interval_seconds", 120)),
             timeout_seconds=float(reach_raw.get("timeout_seconds", 10.0)),
             families=families,
-            targets=list(reach_raw.get("targets", [])),
+            targets=_seq(reach_raw, "targets"),
+        ),
+        egress=EgressConfig(
+            enabled=bool(egress_raw.get("enabled", True)),
+            interval_seconds=int(egress_raw.get("interval_seconds", 300)),
+            timeout_seconds=float(egress_raw.get("timeout_seconds", 10.0)),
+            families=egress_families,
+            expected_prefixes=_seq(egress_raw, "expected_prefixes"),
+            endpoints=dict(egress_raw.get("endpoints") or EgressConfig().endpoints),
+            match_prefix_ipv4=int(egress_raw.get("match_prefix_ipv4", 24)),
+            match_prefix_ipv6=int(egress_raw.get("match_prefix_ipv6", 48)),
         ),
         trace=TraceConfig(
             enabled=bool(trace_raw.get("enabled", True)),
@@ -331,7 +396,7 @@ def load_site_config(path: Path) -> SiteConfig:
         url=(p.get("url") or None),
         token=(p.get("token") or None),
         db=(Path(p["db"]) if p.get("db") else None),
-    ) for p in raw.get("probes", [])]
+    ) for p in _seq(raw, "probes")]
     if not probes:
         raise ConfigError("site config lists no probes")
 

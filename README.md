@@ -81,6 +81,10 @@ Per uplink, continuously, from identical containers:
   resolvers are broken" is distinguishable from "the line is broken".
 - **TCP connect and TLS handshake** timings — what an application actually
   feels.
+- **Verification that the probe is still on the uplink it claims**, by asking
+  external services which address its traffic arrived from. A probe silently
+  failed over to the backup reports a healthy line throughout the outage it was
+  meant to record; this is what catches that.
 - **Real connections to real sites, per address family** — because loss and
   reachability are different questions. A dual-stack site on a network with
   broken IPv6 routing fails in the browser while every ping stays at 0 % loss.

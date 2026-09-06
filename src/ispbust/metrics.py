@@ -50,6 +50,13 @@ REACH_ATTEMPTS = Counter(
     "ispbust_reach_attempts", "Reachability checks by outcome",
     ["wan", "wan_kind", "host", "family", "outcome"])
 
+EGRESS_OK = Gauge(
+    "ispbust_egress_ok", "Probe left by the expected uplink (1) or not (0)",
+    ["wan", "wan_kind", "family"])
+EGRESS_INFO = Gauge(
+    "ispbust_egress_info", "Observed public egress address (always 1)",
+    ["wan", "wan_kind", "family", "address"])
+
 EVENTS = Counter(
     "ispbust_events", "Impairment events detected by the probe",
     ["wan", "wan_kind", "kind"])
@@ -104,6 +111,12 @@ class Labels:
 
     def reach_attempt(self, host: str, family: str, outcome: str):
         return REACH_ATTEMPTS.labels(self.wan, self.kind, host, family, outcome)
+
+    def egress_ok(self, family: str):
+        return EGRESS_OK.labels(self.wan, self.kind, family)
+
+    def egress_info(self, family: str, address: str):
+        return EGRESS_INFO.labels(self.wan, self.kind, family, address)
 
     def events(self, kind: str):
         return EVENTS.labels(self.wan, self.kind, kind)

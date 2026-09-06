@@ -151,7 +151,10 @@ def probe_server(tmp_path):
         "rtt_min": 1.0, "rtt_avg": 2.0, "rtt_max": 3.0, "rtt_p95": 2.5,
         "rtt_stddev": 0.4, "window_s": 60,
     })
-    httpd = make_server(store, "wan-a", "Link A", "under_test", 0, token="secret")
+    # Bind the loopback address the tests actually connect to. Listening on
+    # 0.0.0.0 made connection setup intermittently time out under load.
+    httpd = make_server(store, "wan-a", "Link A", "under_test", 0,
+                        token="secret", bind="127.0.0.1")
     serve_in_background(httpd)
     port = httpd.server_address[1]
     yield "http://127.0.0.1:%d" % port
@@ -163,7 +166,7 @@ def _get(url, token=None):
     req = urllib.request.Request(url)
     if token:
         req.add_header("Authorization", "Bearer " + token)
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.status, resp.read()
 
 

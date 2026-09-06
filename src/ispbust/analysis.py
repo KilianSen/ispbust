@@ -331,6 +331,48 @@ def broken_families(summary: dict) -> list:
     return findings
 
 
+def egress_summary(rows: list) -> dict:
+    """How much of the period the probe provably used the uplink it names.
+
+    `ok is None` means the check could not run -- usually because the link was
+    down, which is an outage rather than a pin failure, so it is counted apart
+    from both.
+    """
+    out = {"checks": 0, "confirmed": 0, "leaked": 0, "unknown": 0,
+           "windows": [], "addresses": {}, "expected": None}
+    current = None
+    for r in sorted(rows, key=lambda r: r["ts"]):
+        out["checks"] += 1
+        if r["expected"]:
+            out["expected"] = r["expected"]
+        if r["address"]:
+            out["addresses"][r["address"]] = out["addresses"].get(r["address"], 0) + 1
+        if r["ok"] is None:
+            out["unknown"] += 1
+            continue
+        if r["ok"]:
+            out["confirmed"] += 1
+            if current:
+                current["end"] = r["ts"]
+                out["windows"].append(current)
+                current = None
+        else:
+            out["leaked"] += 1
+            if current and current["address"] == r["address"]:
+                current["end"] = r["ts"]
+                current["checks"] += 1
+            else:
+                if current:
+                    out["windows"].append(current)
+                current = {"start": r["ts"], "end": r["ts"],
+                           "address": r["address"], "checks": 1}
+    if current:
+        out["windows"].append(current)
+    graded = out["confirmed"] + out["leaked"]
+    out["confirmed_ratio"] = (out["confirmed"] / graded) if graded else None
+    return out
+
+
 def dns_summary(rows: list) -> dict:
     by_resolver: dict = defaultdict(
         lambda: {"total": 0, "failed": 0, "nxdomain": 0, "role": "", "durations": []})
@@ -374,6 +416,7 @@ class Analysis:
     traces: list
     first_hop_ips: list
     files: list
+    egress: dict = field(default_factory=dict)
     reach: dict = field(default_factory=dict)
     reach_control: dict = field(default_factory=dict)
     reach_broken: list = field(default_factory=list)
@@ -456,6 +499,15 @@ def analyse(site: SiteConfig, databases: dict, date_from: str, date_to: str) -> 
             # A probe running an older build has no reach table yet.
             return []
 
+    def _egress(wan_id: str, connection) -> list:
+        try:
+            return connection.execute(
+                "SELECT ts, family, address, expected, ok FROM egress "
+                "WHERE wan = ? AND ts >= ? AND ts < ?", (wan_id, t0, t1)).fetchall()
+        except sqlite3.Error:
+            return []
+
+    egress = egress_summary(_egress(primary_ref.id, con))
     reach = reach_summary(_reach(primary_ref.id, con))
     reach_control = {}
     if controls and site.controls[0].id in connections:
@@ -500,6 +552,7 @@ def analyse(site: SiteConfig, databases: dict, date_from: str, date_to: str) -> 
         traces=parsed_traces,
         first_hop_ips=sorted({r["detail"] for r in hop_rows if r["detail"]}),
         files=files,
+        egress=egress,
         reach=reach,
         reach_control=reach_control,
         reach_broken=broken_families(reach),

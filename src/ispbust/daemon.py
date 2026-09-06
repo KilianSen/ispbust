@@ -14,6 +14,7 @@ from .collectors import (
     Collector,
     DiscoveryCollector,
     DnsCollector,
+    EgressCollector,
     IcmpCollector,
     ProbeContext,
     ReachCollector,
@@ -50,6 +51,8 @@ class Daemon:
             active.append(TcpCollector(self.ctx))
         if self.cfg.reach.enabled and self.cfg.reach.targets:
             active.append(ReachCollector(self.ctx))
+        if self.cfg.egress.enabled:
+            active.append(EgressCollector(self.ctx))
         if self.cfg.trace.enabled:
             active.append(TraceCollector(self.ctx))
         return active

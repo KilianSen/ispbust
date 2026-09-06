@@ -78,6 +78,12 @@ def cmd_check(args) -> int:
                 print("                 %s:%s" % (r["host"], r.get("port", 443)))
         else:
             print("  reachability : disabled")
+        if cfg.egress.enabled:
+            expected = ", ".join(cfg.egress.expected_prefixes) or "learned on first check"
+            print("  egress check : %s every %ds, expect %s"
+                  % ("+".join(cfg.egress.families), cfg.egress.interval_seconds, expected))
+        else:
+            print("  egress check : DISABLED -- a silent failover would go unnoticed")
         print("  tcp          : %d targets every %ds"
               % (len(cfg.tcp.targets), cfg.tcp.interval_seconds)
               if cfg.tcp.enabled else "  tcp          : disabled")

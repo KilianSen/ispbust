@@ -138,6 +138,28 @@ reachability:
     - host: cloudflare.com
       port: 443
 
+egress:
+  # Confirm this probe is still leaving by the uplink it is pinned to.
+  #
+  # This is the check every other number here depends on. A probe pinned to one
+  # uplink whose router quietly fails it over keeps reporting a perfectly
+  # healthy line for the whole duration of the outage it was deployed to
+  # record -- and the figures look completely normal, which is what makes it
+  # dangerous. Observed on real hardware.
+  enabled: true
+  interval_seconds: 300
+  timeout_seconds: 10.0
+  families: [ipv4]
+  # State this explicitly. Without it the first observation becomes the
+  # baseline, which assumes the pin was correct at that moment.
+  expected_prefixes:
+    # - 203.0.113.0/24    # the range your operator announces
+  endpoints:
+    ipv4:
+      - https://api.ipify.org
+      - https://icanhazip.com
+      - https://ifconfig.me/ip
+
 traceroute:
   enabled: true
   target: 1.1.1.1

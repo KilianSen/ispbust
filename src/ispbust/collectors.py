@@ -10,6 +10,7 @@ the first thing a support desk will point at.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import logging
 import socket
@@ -17,11 +18,13 @@ import ssl
 import subprocess
 import threading
 import time
+import urllib.request
 from dataclasses import dataclass
 
 from .config import (
     DiscoveryConfig,
     DnsConfig,
+    EgressConfig,
     IcmpConfig,
     ProbeConfig,
     ReachConfig,
@@ -596,6 +599,138 @@ class ReachCollector(Collector):
         if attempted and all(r.get("ok") == 0 for r in attempted):
             self.probe.record_event("site_unreachable", "reach", host,
                                     "no address family could complete a request")
+
+
+# ----------------------------------------------------------------- egress
+
+
+class EgressCollector(Collector):
+    """Confirm the probe is still leaving by the uplink it is pinned to.
+
+    Everything else this tool records assumes the probe's traffic went out the
+    uplink named in its config. When a router quietly fails a "pinned" probe
+    over to the other uplink, that assumption breaks silently and in the worst
+    possible way: the probe keeps reporting a perfectly healthy line for the
+    whole duration of the outage it was deployed to document, and the numbers
+    look entirely normal.
+
+    So the probe asks the internet which address it arrived from, and compares
+    that against what it should be. A mismatch does not degrade the data, it
+    invalidates it for that period, and the report has to say so.
+    """
+
+    name = "egress"
+
+    def __init__(self, probe: ProbeContext):
+        super().__init__(probe)
+        self.reported: dict = {}
+
+    @property
+    def conf(self) -> EgressConfig:
+        return self.cfg.egress
+
+    @property
+    def interval(self) -> float:
+        return self.conf.interval_seconds
+
+    def run_once(self) -> None:
+        for family in self.conf.families:
+            if self.stop.is_set():
+                return
+            self.check(family)
+
+    def observe(self, family: str) -> tuple:
+        """Ask several independent services; the first clean answer wins."""
+        for url in self.conf.endpoints.get(family, []):
+            try:
+                request = urllib.request.Request(url, headers={"User-Agent": "ispbust"})
+                with urllib.request.urlopen(request, timeout=self.conf.timeout_seconds) as resp:
+                    text = resp.read(200).decode("utf-8", "replace").strip()
+                address = ipaddress.ip_address(text)
+            except Exception as exc:  # noqa: BLE001 - just try the next endpoint
+                LOG.debug("egress endpoint %s failed: %s", url, exc)
+                continue
+            if address.version != (6 if family == "ipv6" else 4):
+                continue
+            return str(address), url, None
+        return None, None, "no egress endpoint answered"
+
+    def expected_networks(self, family: str) -> list:
+        """Configured prefixes win; otherwise use the learned baseline."""
+        version = 6 if family == "ipv6" else 4
+        configured = []
+        for cidr in self.conf.expected_prefixes:
+            try:
+                net = ipaddress.ip_network(cidr, strict=False)
+            except ValueError:
+                continue
+            if net.version == version:
+                configured.append(net)
+        if configured:
+            return configured
+
+        baseline = self.store.get_meta("egress_baseline_" + family)
+        if baseline:
+            try:
+                return [ipaddress.ip_network(baseline, strict=False)]
+            except ValueError:
+                return []
+        return []
+
+    def learn(self, family: str, address: str) -> None:
+        width = (self.conf.match_prefix_ipv6 if family == "ipv6"
+                 else self.conf.match_prefix_ipv4)
+        network = ipaddress.ip_network("%s/%d" % (address, width), strict=False)
+        self.store.set_meta("egress_baseline_" + family, str(network))
+        self.store.marker("egress_baseline", "%s %s" % (family, network))
+        LOG.info("egress baseline for %s learned as %s (observed %s). State it "
+                 "explicitly with egress.expected_prefixes -- a learned baseline "
+                 "assumes the pin was correct at that moment.",
+                 family, network, address)
+
+    def check(self, family: str) -> None:
+        address, endpoint, error = self.observe(family)
+        networks = self.expected_networks(family)
+
+        row = {
+            "ts": iso(), "wan": self.cfg.wan_id, "family": family,
+            "address": address,
+            "expected": ", ".join(str(n) for n in networks) if networks else None,
+            "ok": None, "endpoint": endpoint, "error": error,
+        }
+
+        if address is None:
+            # Could not ask. Not a leak: most likely the link is simply down,
+            # which every other collector is already recording.
+            self.store.insert("egress", row)
+            self.labels.egress_ok(family).set(0)
+            return
+
+        if not networks:
+            self.learn(family, address)
+            networks = self.expected_networks(family)
+            row["expected"] = ", ".join(str(n) for n in networks)
+
+        inside = any(ipaddress.ip_address(address) in net for net in networks)
+        row["ok"] = 1 if inside else 0
+        self.store.insert("egress", row)
+        self.labels.egress_ok(family).set(1 if inside else 0)
+        self.labels.egress_info(family, address).set(1)
+
+        previous = self.reported.get(family)
+        if not inside and previous != address:
+            self.reported[family] = address
+            self.probe.record_event(
+                "egress_unexpected", family, address,
+                "this probe left by %s, outside the expected range (%s). It is not "
+                "measuring the uplink it is pinned to, so anything recorded for this "
+                "period describes a different link. Check the router policy route and "
+                "turn its failover off." % (address, row["expected"]))
+        elif inside and previous is not None:
+            self.reported.pop(family, None)
+            self.probe.record_event(
+                "egress_restored", family, address,
+                "egress is back inside the expected range (%s)" % row["expected"])
 
 
 # --------------------------------------------------------------- traceroute

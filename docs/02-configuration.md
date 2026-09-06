@@ -85,6 +85,44 @@ cannot hide a broken resolver. List the operator's resolvers *and* public ones:
 the comparison is what separates "the line is broken" from "their resolvers are
 broken".
 
+### `egress`
+
+Confirms the probe is still leaving by the uplink it is pinned to, by asking
+independent external services which public address its traffic arrived from.
+
+**This is the check every other number depends on.** A probe pinned to one
+uplink whose router quietly fails it over keeps reporting a perfectly healthy
+line for the entire duration of the outage it was deployed to record — and the
+figures look completely normal, which is exactly what makes it dangerous. It
+was found on real hardware: with the primary WAN switched off, the "pinned"
+probe was still reaching the internet through the backup and reporting 0.6 %
+loss.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `interval_seconds` | `300` | How often to verify. |
+| `families` | `[ipv4]` | Add `ipv6` if your v6 is pinned too — usually it is not. |
+| `expected_prefixes` | — | CIDRs the probe must egress from. **State this.** |
+| `endpoints` | three public echo services | Tried in order; the first clean answer wins. |
+| `match_prefix_ipv4` / `_ipv6` | `24` / `48` | Width used when a baseline has to be learned. |
+
+Without `expected_prefixes` the first successful observation becomes the
+baseline, which is convenient and assumes the pin was correct at that moment.
+Find the right value with `whois` on the address the probe reports, and use the
+operator's announced prefix rather than the single address, so a normal address
+change inside their range is not mistaken for a failover.
+
+Two events come out of it: **`egress_unexpected`** when the observed address
+falls outside the expected range, raised once per address rather than every
+cycle, and **`egress_restored`** when it returns. A check that could not run at
+all is recorded as unknown, not as a leak — a dead link cannot answer, and that
+is an outage the other collectors already cover.
+
+The report puts this immediately after the summary, before any figures: a
+reader is entitled to know the measurements describe the connection named on
+the front page before being asked to accept them. If a leak occurred, the
+affected periods are listed and flagged as describing a different link.
+
 ### `reachability`
 
 Opens a real connection to real sites, separately over each address family,
