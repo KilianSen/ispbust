@@ -248,6 +248,28 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ---
 
+## The assessment
+
+The report interprets its own measurements. Findings are ordered worst first
+and carry a severity; each names the figures behind it, so a reader can check
+every one against the tables.
+
+Two properties are worth knowing about. **Integrity outranks everything**: if
+the egress check found the probe on the wrong uplink for most of the period,
+the assessment withholds its conclusions rather than describing a different
+connection with confidence. And **declining to conclude is a result**: no
+control link, a period under a day, both links degraded at once, or a control
+that was the worse of the two each produce a finding saying so.
+
+The same findings print from `ispbust summary` and `ispbust report`, and appear
+under `findings` in `ispbust summary --json`, so a dashboard, the terminal and
+the document cannot drift apart.
+
+Thresholds live in [`src/ispbust/assessment.py`](../src/ispbust/assessment.py),
+one small function per rule; the wording lives in
+[`src/ispbust/report/findings.py`](../src/ispbust/report/findings.py) with a
+key per language.
+
 ## Commands
 
 ```

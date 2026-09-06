@@ -200,15 +200,16 @@ def test_no_pattern_claim_on_a_clean_line():
 # ------------------------------------------------------------ other faults
 
 
-def test_broken_address_family_is_reported_per_site():
+def test_broken_address_family_is_reported():
     a = analysis(reach_broken=[
         {"host": "claude.ai", "family": "ipv6", "address": "2607:6bc0::10",
          "working": ["ipv4"], "fail_ratio": 1.0, "attempts": 12, "errors": {}},
     ])
     f = one(assess(a), "family_broken")
     assert f.severity == CRITICAL
-    assert f.params["family"] == "IPV6"
-    assert f.params["host"] == "claude.ai"
+    assert f.params["family"] == "IPv6"
+    assert f.params["example"] == "claude.ai"
+    assert f.params["count"] == 1
 
 
 def test_operator_resolvers_failing_alone_is_not_a_line_fault():
@@ -274,9 +275,8 @@ def test_every_finding_has_text_in_every_language():
              "b": {"role": "public_control", "total": 10, "fail_ratio": 0.0}},
         reach_broken=[{"host": "x", "family": "ipv6", "address": "::1",
                        "working": ["ipv4"], "fail_ratio": 1.0, "attempts": 2, "errors": {}}],
-        egress={"checks": 2, "confirmed": 0, "leaked": 2, "unknown": 0,
-                "windows": [{"address": "9.9.9.9", "checks": 2}],
-                "expected": "94.31.72.0/22", "confirmed_ratio": 0.0},
+        egress={"checks": 4, "confirmed": 4, "leaked": 0, "unknown": 0,
+                "windows": [], "expected": "94.31.72.0/22", "confirmed_ratio": 1.0},
     )
     findings = assess(a)
     assert len(findings) >= 8, keys(findings)
@@ -287,3 +287,66 @@ def test_every_finding_has_text_in_every_language():
                 text = STRINGS[key].get(lang)
                 assert text, "%s missing %s" % (key, lang)
                 text.format(**finding.params)  # every placeholder must resolve
+
+
+# ----------------------------------------------- refusing to over-conclude
+
+
+def _leaked(confirmed_ratio):
+    return {"checks": 10, "confirmed": int(10 * confirmed_ratio),
+            "leaked": 10 - int(10 * confirmed_ratio), "unknown": 0,
+            "windows": [{"address": "9.246.125.16", "checks": 1}],
+            "expected": "94.31.72.0/22", "confirmed_ratio": confirmed_ratio}
+
+
+def test_no_causal_conclusions_are_drawn_from_leaked_data():
+    """The tool must not say where the fault is using data it just invalidated."""
+    a = analysis(
+        primary=FakeLink(loss=0.08, first_hop=0.05),
+        has_first_hop=True, first_hop_ips=["100.64.0.1"],
+        has_control=True, controls=[FakeLink(label="Backup")],
+        comparison={"common_minutes": 1440, "primary_only_bad": 300, "control_only_bad": 0,
+                    "both_bad": 0, "primary_blackout_control_fine": 10,
+                    "primary_loss": 0.08, "control_loss": 0.0},
+        egress=_leaked(0.1),
+    )
+    found = keys(assess(a))
+    assert "integrity_leaked" in found
+    assert "conclusions_withheld" in found
+    for suppressed in ("operator_network_loss", "isolated_to_link",
+                       "loss_severe", "constant_pattern"):
+        assert suppressed not in found, "%s must not be claimed from leaked data" % suppressed
+
+
+def test_a_mostly_clean_period_still_gets_conclusions():
+    a = analysis(primary=FakeLink(loss=0.08), egress=_leaked(0.9))
+    found = keys(assess(a))
+    assert "integrity_leaked" in found
+    assert "conclusions_withheld" not in found
+    assert "loss_severe" in found, "a brief blip must not silence the whole report"
+
+
+def test_broken_family_is_reported_once_not_once_per_site():
+    a = analysis(reach_broken=[
+        {"host": h, "family": "ipv6", "address": "2607:6bc0::10", "working": ["ipv4"],
+         "fail_ratio": 1.0, "attempts": 6, "errors": {}}
+        for h in ("claude.ai", "www.google.com", "www.heise.de")
+    ])
+    found = [f for f in assess(a) if f.key == "family_broken"]
+    assert len(found) == 1
+    assert found[0].params["count"] == 3
+    assert "claude.ai" in found[0].params["hosts"]
+    assert found[0].params["family"] == "IPv6", "must read as IPv6, not IPV6"
+    assert found[0].params["working"] == "IPv4"
+
+
+def test_withheld_and_leaked_findings_also_have_text():
+    from ispbust.report.strings import STRINGS
+
+    a = analysis(primary=FakeLink(loss=0.08), egress=_leaked(0.1))
+    findings = assess(a)
+    assert {"integrity_leaked", "conclusions_withheld"} <= set(keys(findings))
+    for finding in findings:
+        for key in (finding.title_key, finding.body_key):
+            for lang in ("en", "de"):
+                STRINGS[key][lang].format(**finding.params)

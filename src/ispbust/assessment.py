@@ -46,16 +46,38 @@ def _pct(value: float, digits: int = 2) -> str:
     return ("%." + str(digits) + "f") % (value * 100) + " %"
 
 
+FAMILY_LABEL = {"ipv4": "IPv4", "ipv6": "IPv6"}
+
+
+def _family(name: str) -> str:
+    return FAMILY_LABEL.get(name, name)
+
+
 def _mean(values: list) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
 def assess(analysis) -> list:
     """Return findings, most serious first."""
-    findings: list = []
+    integrity = _integrity(analysis) or []
+    sufficiency = _sufficiency(analysis) or []
+
+    # If the probe spent most of the period on the wrong uplink, every
+    # conclusion about "this connection" would describe a different one.
+    # Saying nothing is the honest outcome; saying it confidently is how a
+    # report gets discredited.
+    e = analysis.egress or {}
+    ratio = e.get("confirmed_ratio")
+    if e.get("leaked") and ratio is not None and ratio < 0.5:
+        withheld = Finding("conclusions_withheld", CRITICAL, {
+            "confirmed": _pct(ratio, 0),
+        })
+        findings = integrity + [withheld] + sufficiency
+        findings.sort(key=lambda f: _ORDER.get(f.severity, 9))
+        return findings
+
+    findings = list(integrity) + list(sufficiency)
     for rule in (
-        _integrity,
-        _sufficiency,
         _headline_loss,
         _isolation,
         _operator_network,
@@ -171,14 +193,22 @@ def _time_of_day(a) -> list:
 
 
 def _address_family(a) -> list:
-    findings = []
+    """One finding per broken family. A separate one per site would repeat the
+    same conclusion three times and bury everything else."""
+    by_family: dict = {}
     for broken in a.reach_broken or []:
+        by_family.setdefault(broken["family"], []).append(broken)
+    findings = []
+    for family, items in sorted(by_family.items()):
+        working = sorted({f for b in items for f in b["working"]})
         findings.append(Finding("family_broken", CRITICAL, {
-            "family": broken["family"].upper(),
-            "host": broken["host"],
-            "address": broken["address"] or "?",
-            "working": ", ".join(f.upper() for f in broken["working"]),
-            "fail": _pct(broken["fail_ratio"], 0),
+            "family": _family(family),
+            "hosts": ", ".join(sorted(b["host"] for b in items)),
+            "count": len(items),
+            "address": items[0]["address"] or "?",
+            "example": items[0]["host"],
+            "working": ", ".join(_family(f) for f in working),
+            "fail": _pct(_mean([b["fail_ratio"] for b in items]), 0),
         }))
     return findings
 

@@ -274,22 +274,41 @@ FINDING_STRINGS: dict = {
     },
 
     # -- address family ----------------------------------------------------
+    "f_conclusions_withheld_title": {
+        "en": "No conclusions are drawn about this connection for this period",
+        "de": "Für diesen Zeitraum werden keine Aussagen zu diesem Anschluss getroffen",
+    },
+    "f_conclusions_withheld_body": {
+        "en": "Only {confirmed} of the verification checks confirmed that the probe used "
+              "the connection named here, so for most of this period the measurements "
+              "describe a different uplink. Drawing conclusions from them would be "
+              "misleading, and they are therefore withheld. Correct the router's policy "
+              "route so the probe cannot fail over, then measure again.",
+        "de": "Nur {confirmed} der Prüfungen bestätigten, dass die Messsonde den hier "
+              "genannten Anschluss genutzt hat; für den überwiegenden Teil des Zeitraums "
+              "beschreiben die Messwerte daher einen anderen Anschluss. Daraus Aussagen "
+              "abzuleiten wäre irreführend, weshalb darauf verzichtet wird. Die "
+              "Routing-Regel ist so zu korrigieren, dass die Sonde nicht ausweichen kann; "
+              "anschließend ist erneut zu messen.",
+    },
     "f_family_broken_title": {
         "en": "{family} is unusable, which breaks sites that ping perfectly",
         "de": "{family} ist unbrauchbar, wodurch Seiten ausfallen, die im Ping einwandfrei sind",
     },
     "f_family_broken_body": {
-        "en": "{host} resolves to {address} over {family}, but {fail} of connection attempts "
-              "over {family} failed while {working} worked normally. A browser tries the "
-              "broken family first, so the site fails to load entirely — even though packet "
-              "loss measurements over {working} stay clean. This is a distinct fault from "
-              "packet loss and is invisible to ping.",
-        "de": "{host} löst über {family} auf {address} auf, jedoch schlugen {fail} der "
-              "Verbindungsversuche über {family} fehl, während {working} einwandfrei "
-              "funktionierte. Ein Browser versucht zuerst die defekte Adressfamilie, sodass "
-              "die Seite vollständig ausfällt — obwohl Paketverlustmessungen über {working} "
-              "unauffällig bleiben. Das ist ein von Paketverlust getrennter Fehler und im "
-              "Ping nicht sichtbar.",
+        "en": "{count} of the sites tested could not be reached over {family} while "
+              "{working} worked normally: {hosts}. {example} resolves to {address} over "
+              "{family}, and {fail} of connection attempts to it over {family} failed. A "
+              "browser tries the broken family first, so such sites fail to load entirely "
+              "— even though packet loss measurements over {working} stay clean. This is a "
+              "distinct fault from packet loss and is invisible to ping.",
+        "de": "{count} der geprüften Websites waren über {family} nicht erreichbar, während "
+              "{working} einwandfrei funktionierte: {hosts}. {example} löst über {family} "
+              "auf {address} auf; {fail} der Verbindungsversuche dorthin über {family} "
+              "schlugen fehl. Ein Browser versucht zuerst die defekte Adressfamilie, sodass "
+              "solche Seiten vollständig ausfallen — obwohl Paketverlustmessungen über "
+              "{working} unauffällig bleiben. Das ist ein von Paketverlust getrennter "
+              "Fehler und im Ping nicht sichtbar.",
     },
 
     # -- DNS ---------------------------------------------------------------

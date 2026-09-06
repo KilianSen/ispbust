@@ -95,6 +95,22 @@ Everything lands in SQLite (queryable), append-only NDJSON (the archive you
 hand over), and Prometheus (the live view only — the evidence survives a
 Prometheus wipe).
 
+## What it concludes
+
+The report does not stop at tables. It states what the measurements support —
+whether the fault is isolated to the link under test, whether the loss sits
+inside the operator's own network, whether the shape over the day reads as
+congestion or as a fault, whether an address family is broken, whether the
+operator's resolvers are at fault rather than the line, and whether a nightly
+restart is curing the problem or causing it.
+
+Every finding names the figures it rests on, because a conclusion a reader
+cannot check is worth less than none. The findings that decline to conclude
+anything matter as much as the rest: no control link, too short a period, both
+links bad at once. And if the egress check found the probe on the wrong uplink,
+the assessment withholds its conclusions entirely rather than describing the
+wrong connection with confidence.
+
 ## What comes out
 
 A single HTML file, no external assets, prints straight to PDF:
