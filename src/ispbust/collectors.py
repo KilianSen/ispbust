@@ -202,14 +202,30 @@ class IcmpCollector(Collector):
         if not targets:
             self.stop.wait(10)
             return
-        # fping cannot mix families in one run, so group and run each family
-        # separately. Both share a timestamp so the windows line up.
         groups: dict = {}
         for t in targets:
             groups.setdefault(self.family_of(t.host), {})[t.host] = t
         ts = iso()
-        for family, by_host in groups.items():
+
+        if len(groups) == 1:
+            family, by_host = next(iter(groups.items()))
             self.measure(family, by_host, ts)
+            return
+
+        # fping cannot mix address families in one run, and each run blocks for
+        # a whole window. Running them one after another would sample every
+        # target half as often and break the one-row-per-target-per-minute
+        # cadence the report is built on, so the families run side by side and
+        # share a timestamp.
+        threads = [
+            threading.Thread(target=self.measure, args=(family, by_host, ts),
+                             name="icmp-%s" % family, daemon=True)
+            for family, by_host in groups.items()
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=self.conf.window_seconds + 45)
 
     def measure(self, family: str, by_host: dict, ts: str) -> None:
         rc, _, err = run_cmd(self.command(list(by_host), family),

@@ -739,3 +739,73 @@ def test_reach_reports_a_genuinely_absent_record_as_absent(tmp_path, monkeypatch
     assert address is None
     assert why == "no AAAA record"
     store.close()
+
+
+def test_icmp_families_are_measured_concurrently(tmp_path):
+    """Sequential family runs would halve the sampling rate.
+
+    Each fping run blocks for a full window, so running IPv4 then IPv6 would
+    produce one row per target every two minutes instead of every minute --
+    quietly breaking the cadence every figure in the report rests on.
+    """
+    import threading
+    import time
+
+    from ispbust.collectors import IcmpCollector, ProbeContext
+    from ispbust.config import IcmpConfig, ProbeConfig, Target
+    from ispbust.metrics import Labels
+
+    cfg = ProbeConfig(
+        wan_id="w", label="w", data_dir=tmp_path,
+        icmp=IcmpConfig(window_seconds=10, targets=[
+            Target(host="1.1.1.1", role="anchor"),
+            Target(host="2606:4700:4700::1111", role="anchor_v6"),
+        ]),
+    )
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "w")
+    ctx = ProbeContext(cfg=cfg, store=store, labels=Labels("w", "under_test"),
+                       stop=threading.Event())
+    collector = IcmpCollector(ctx)
+
+    spans = {}
+
+    def fake_measure(family, by_host, ts):
+        start = time.monotonic()
+        time.sleep(0.4)
+        spans[family] = (start, time.monotonic())
+
+    collector.measure = fake_measure
+    started = time.monotonic()
+    collector.run_once()
+    elapsed = time.monotonic() - started
+
+    assert set(spans) == {"ipv4", "ipv6"}, spans
+    assert elapsed < 0.75, "families ran one after another (%.2fs)" % elapsed
+    # They must actually overlap, not merely finish quickly.
+    (a_start, a_end), (b_start, b_end) = spans["ipv4"], spans["ipv6"]
+    assert a_start < b_end and b_start < a_end, "family runs did not overlap"
+    store.close()
+
+
+def test_icmp_single_family_takes_the_direct_path(tmp_path):
+    """No thread churn when there is nothing to parallelise."""
+    import threading
+
+    from ispbust.collectors import IcmpCollector, ProbeContext
+    from ispbust.config import IcmpConfig, ProbeConfig, Target
+    from ispbust.metrics import Labels
+
+    cfg = ProbeConfig(wan_id="w", label="w", data_dir=tmp_path,
+                      icmp=IcmpConfig(targets=[Target(host="1.1.1.1", role="anchor")]))
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "w")
+    ctx = ProbeContext(cfg=cfg, store=store, labels=Labels("w", "under_test"),
+                       stop=threading.Event())
+    collector = IcmpCollector(ctx)
+
+    seen = []
+    collector.measure = lambda family, by_host, ts: seen.append((family, threading.current_thread().name))
+    collector.run_once()
+
+    assert len(seen) == 1 and seen[0][0] == "ipv4"
+    assert seen[0][1] == threading.current_thread().name, "should run inline"
+    store.close()

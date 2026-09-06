@@ -48,6 +48,22 @@ icmp:
       role: anchor_de
       note: "Deutsche Telekom resolver -- replace with a local one"
 
+    # IPv6 anchors. The role is deliberately NOT "anchor": that role feeds the
+    # headline loss figure and the paired comparison, and on most dual-WAN
+    # gateways IPv6 is not policy-routed, so it leaves by one uplink whichever
+    # WAN the IPv4 pin names. Mixing it into "anchor" would corrupt the
+    # control. These are recorded and charted per target instead.
+    # See docs/01-deployment.md.
+    - host: 2606:4700:4700::1111
+      role: anchor_v6
+      note: "Cloudflare, pairs with 1.1.1.1"
+    - host: 2001:4860:4860::8888
+      role: anchor_v6
+      note: "Google, pairs with 8.8.8.8"
+    - host: 2620:fe::fe
+      role: anchor_v6
+      note: "Quad9, pairs with 9.9.9.9"
+
 upstream_discovery:
   enabled: true
   via: 1.1.1.1
