@@ -181,13 +181,26 @@ is not a control for IPv6. Treat the IPv6 rows as measurements of whichever
 uplink owns that prefix, and lean on the IPv4 comparison for anything you put
 in front of an operator.
 
-There is a sharper consequence if your LAN prefix is delegated from one ISP.
-IPv6 then has **no failover**: an address delegated by operator A cannot be
-routed out of operator B, whose network will drop it at the edge. So when A
-fails, IPv4 fails over and the connection looks alive, while IPv6 stays
-pointed at the dead uplink. Every dual-stack site breaks in the browser —
-users report "the site does not load at all" while every ping still succeeds.
-The `reachability` collector is what makes that visible; see
+There is a sharper consequence around failover, and it is worth being precise
+about it. A LAN prefix delegated by operator A cannot be routed out of
+operator B: B's edge drops a source address that is not theirs. So failing
+IPv6 over means **renumbering** the LAN — withdrawing A's prefix and
+advertising one delegated by B. Whether your gateway does that, and how
+quickly, is a per-vendor question worth testing rather than assuming.
+
+What holds regardless is the client-side gap. Hosts keep addresses from the
+old prefix until they expire, and a delegated prefix is often advertised with
+a short lifetime tied to the upstream lease — a router advertisement observed
+on one line carried a valid lifetime of about 37 minutes. Until those
+addresses go away, clients keep selecting a source address routed to a dead
+uplink. IPv4 fails over and the line looks alive while every dual-stack site
+stalls in the browser, because the browser tries IPv6 first and the pings
+never did.
+
+To find out what your own gateway does, disable the primary WAN for a couple
+of minutes and read the `reach` table afterwards: `ipv4 ok=1 / ipv6 ok=0`
+means IPv6 did not follow, and how long it took to recover is the size of your
+gap. The `reachability` collector is what makes that visible; see
 [02-configuration.md](02-configuration.md).
 
 ---
