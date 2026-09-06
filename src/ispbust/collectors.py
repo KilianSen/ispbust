@@ -43,6 +43,9 @@ except ImportError:  # pragma: no cover - probing DNS is optional
 
 LOG = logging.getLogger("ispbust.collect")
 
+# Roles that represent "the internet, reached through this link".
+ANCHOR_ROLES = ("anchor", "anchor_de", "anchor_intl")
+
 
 def run_cmd(cmd: list[str], timeout: int) -> tuple[int, str, str]:
     """Run a subprocess and never raise. Returns (rc, stdout, stderr)."""
@@ -136,6 +139,17 @@ class IcmpCollector(Collector):
     """
 
     name = "icmp"
+
+    # A first hop that loses everything while the anchors beyond it stay clean
+    # is not an outage: the packets plainly got through it. Require a few such
+    # windows before dropping it, so a genuine brief outage is not discarded.
+    FIRST_HOP_STRIKES = 3
+    ANCHOR_CLEAN_RATIO = 0.5
+
+    def __init__(self, probe: ProbeContext):
+        super().__init__(probe)
+        self.first_hop_strikes: dict = {}
+        self.first_hop_dropped: set = set()
 
     @property
     def conf(self) -> IcmpConfig:
@@ -238,6 +252,7 @@ class IcmpCollector(Collector):
             LOG.error("fping is not installed -- the ICMP collector cannot run")
             self.stop.wait(30)
             return
+        window: dict = {}
         for host, vals in self.parse(err).items():
             target = by_host.get(host)
             if target is None:
@@ -246,6 +261,7 @@ class IcmpCollector(Collector):
             sent, lost = len(vals), len(vals) - len(good)
             ratio = lost / sent if sent else 0.0
             stats = self.rtt_stats(good)
+            window[host] = (target, ratio, stats)
             self.store.insert("icmp", {
                 "ts": ts, "wan": self.cfg.wan_id, "target": host, "role": target.role,
                 "sent": sent, "lost": lost, "loss_ratio": round(ratio, 6),
@@ -259,7 +275,73 @@ class IcmpCollector(Collector):
             for stat, value in stats.items():
                 if value is not None:
                     self.labels.icmp_rtt(host, target.role, stat).set(value)
+
+        suspect = self.audit_first_hop(window)
+        for host, (target, ratio, stats) in window.items():
+            if host in suspect:
+                continue
             self.check_event(host, target, ratio, stats)
+
+    def audit_first_hop(self, window: dict) -> set:
+        """Catch a first hop whose total loss is an artefact, not an outage.
+
+        A router can answer a ping addressed to it when that is the only thing
+        arriving, and drop it while the same source is also pinging other
+        destinations -- which is precisely what this collector does. Validating
+        the hop on its own therefore passes it, and it then reads 100 % lost
+        for ever on a link carrying traffic perfectly well.
+
+        The reliable test is the measurement itself: total loss to the operator's
+        own hop, in a window where the anchors beyond it were clean, is not an
+        outage. Packets plainly reached the internet through that hop. Such a
+        window is not reported as an event, and a hop that does it repeatedly is
+        dropped rather than left to contribute a false figure.
+        """
+        anchors = [(r, s) for _h, (t, r, s) in window.items() if t.role in ANCHOR_ROLES]
+        first_hops = {h: (t, r) for h, (t, r, _s) in window.items()
+                      if t.role == self.cfg.discovery.role}
+        if not anchors or not first_hops:
+            return set()
+
+        anchor_loss = sum(r for r, _s in anchors) / len(anchors)
+        if anchor_loss >= self.ANCHOR_CLEAN_RATIO:
+            # The whole link is struggling, so total loss to the hop is
+            # plausible. Say nothing and let it be reported normally.
+            return set()
+
+        suspect = set()
+        for host, (_target, ratio) in first_hops.items():
+            if ratio < 0.999:
+                self.first_hop_strikes.pop(host, None)
+                continue
+            suspect.add(host)
+            strikes = self.first_hop_strikes.get(host, 0) + 1
+            self.first_hop_strikes[host] = strikes
+            if strikes < self.FIRST_HOP_STRIKES:
+                LOG.warning(
+                    "%s lost every packet while anchors beyond it lost %.1f%% -- "
+                    "treating as an ICMP handling artefact, not an outage (%d/%d)",
+                    host, anchor_loss * 100, strikes, self.FIRST_HOP_STRIKES)
+                continue
+            if host in self.first_hop_dropped:
+                continue
+            self.first_hop_dropped.add(host)
+            LOG.warning("dropping first hop %s: unmeasurable alongside other targets", host)
+            self.store.marker(
+                "upstream_hop_dropped",
+                "%s: lost every packet in %d consecutive windows while the anchors "
+                "beyond it stayed clean" % (host, strikes))
+            self.probe.record_event(
+                "upstream_hop_unmeasurable", self.cfg.discovery.role, host,
+                "lost every packet in %d consecutive windows while the anchors reached "
+                "through it lost only %.1f%%. Traffic is passing through this hop, so "
+                "the loss is an artefact of how it handles pings addressed to itself "
+                "rather than a fault. It has been dropped so it cannot contribute a "
+                "false figure; the scheduled traceroutes still record per-hop loss for "
+                "it." % (strikes, anchor_loss * 100))
+            self.probe.set_dynamic([])
+            self.probe.first_hop = None
+        return suspect
 
     def check_event(self, host: str, target: Target, ratio: float, stats: dict) -> None:
         kinds = []

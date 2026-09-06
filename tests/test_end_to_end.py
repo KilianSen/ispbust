@@ -895,3 +895,102 @@ def test_a_healthy_hop_survives_revalidation(tmp_path, monkeypatch):
     assert ctx.dynamic_targets == [target], "a usable hop must be kept"
     assert ctx.first_hop == "62.156.128.1"
     store.close()
+
+
+# --------------------------------- first hop that cannot be measured in-band
+
+
+def _icmp(tmp_path, **icmp_kwargs):
+    import threading
+
+    from ispbust.collectors import IcmpCollector, ProbeContext
+    from ispbust.config import DiscoveryConfig, IcmpConfig, ProbeConfig
+    from ispbust.metrics import Labels
+
+    cfg = ProbeConfig(wan_id="w", label="w", data_dir=tmp_path,
+                      icmp=IcmpConfig(**icmp_kwargs),
+                      discovery=DiscoveryConfig(role="isp_first_hop"))
+    store = Store(tmp_path / "p.sqlite", tmp_path / "raw", "w")
+    ctx = ProbeContext(cfg=cfg, store=store, labels=Labels("w", "under_test"),
+                       stop=threading.Event())
+    return IcmpCollector(ctx), ctx, store
+
+
+def _window(first_hop_loss, anchor_loss):
+    from ispbust.config import Target
+
+    stats = {"min": 1.0, "avg": 1.0, "max": 1.0, "p95": 1.0, "stddev": 0.0}
+    return {
+        "100.64.0.1": (Target(host="100.64.0.1", role="isp_first_hop"), first_hop_loss, stats),
+        "1.1.1.1": (Target(host="1.1.1.1", role="anchor"), anchor_loss, stats),
+        "8.8.8.8": (Target(host="8.8.8.8", role="anchor"), anchor_loss, stats),
+    }
+
+
+def test_total_loss_to_the_first_hop_with_clean_anchors_is_not_an_outage(tmp_path):
+    """Observed live: a gateway answers a ping sent on its own and drops it when
+    the same source is also pinging other destinations -- which is exactly what
+    the collector does. The packets plainly got through it, so total loss to it
+    is an artefact, and reporting it as an outage would be a false claim."""
+    collector, ctx, store = _icmp(tmp_path)
+    ctx.first_hop = "100.64.0.1"
+
+    suspect = collector.audit_first_hop(_window(1.0, 0.0))
+
+    assert suspect == {"100.64.0.1"}, "must be excluded from event reporting"
+    assert collector.first_hop_strikes["100.64.0.1"] == 1
+    assert list(store.db.execute("SELECT * FROM events")) == [], "no event on the first strike"
+    store.close()
+
+
+def test_it_is_dropped_after_repeated_windows(tmp_path):
+    collector, ctx, store = _icmp(tmp_path)
+    ctx.first_hop = "100.64.0.1"
+
+    for _ in range(collector.FIRST_HOP_STRIKES):
+        collector.audit_first_hop(_window(1.0, 0.0))
+
+    assert ctx.dynamic_targets == []
+    assert ctx.first_hop is None
+    kinds = [r[0] for r in store.db.execute("SELECT kind FROM events")]
+    assert kinds == ["upstream_hop_unmeasurable"]
+    store.close()
+
+
+def test_a_real_outage_is_still_reported(tmp_path):
+    """When the anchors beyond it are also dead, total loss to the hop is real."""
+    collector, ctx, store = _icmp(tmp_path)
+    ctx.first_hop = "100.64.0.1"
+
+    for _ in range(collector.FIRST_HOP_STRIKES + 2):
+        suspect = collector.audit_first_hop(_window(1.0, 1.0))
+
+    assert suspect == set(), "must not be suppressed when the whole link is down"
+    assert ctx.first_hop == "100.64.0.1", "must not be dropped during a real outage"
+    assert list(store.db.execute("SELECT * FROM events")) == []
+    store.close()
+
+
+def test_strikes_reset_when_the_hop_behaves(tmp_path):
+    collector, ctx, store = _icmp(tmp_path)
+    ctx.first_hop = "100.64.0.1"
+
+    collector.audit_first_hop(_window(1.0, 0.0))
+    collector.audit_first_hop(_window(1.0, 0.0))
+    collector.audit_first_hop(_window(0.0, 0.0))          # answered again
+    collector.audit_first_hop(_window(1.0, 0.0))
+
+    assert collector.first_hop_strikes["100.64.0.1"] == 1, "counter must restart"
+    assert ctx.first_hop == "100.64.0.1"
+    store.close()
+
+
+def test_audit_is_inert_without_both_kinds_of_target(tmp_path):
+    from ispbust.config import Target
+
+    collector, ctx, store = _icmp(tmp_path)
+    stats = {"min": 1.0, "avg": 1.0, "max": 1.0, "p95": 1.0, "stddev": 0.0}
+    anchors_only = {"1.1.1.1": (Target(host="1.1.1.1", role="anchor"), 1.0, stats)}
+    assert collector.audit_first_hop(anchors_only) == set()
+    assert collector.audit_first_hop({}) == set()
+    store.close()
