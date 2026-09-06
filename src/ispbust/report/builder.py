@@ -11,6 +11,7 @@ import html
 from datetime import datetime
 
 from ..analysis import Analysis, parse_minute, tzinfo_for
+from ..assessment import assess
 from . import charts
 from .strings import Strings
 from .style import CSS
@@ -116,6 +117,7 @@ class ReportBuilder:
         self.section_summary()
         if a.egress and a.egress.get("checks"):
             self.section_integrity()
+        self.section_assessment()
         self.section_daily()
         self.section_outages()
         if a.cycle:
@@ -230,6 +232,20 @@ class ReportBuilder:
 
         if e["unknown"]:
             self.w('<p class="method">%s</p>' % self.t("si_unknown", count=e["unknown"]))
+
+    def section_assessment(self) -> None:
+        """What the measurements mean, stated before the tables that support it."""
+        findings = assess(self.a)
+        if not findings:
+            return
+        self.heading("sa_heading")
+        self.w("<p>%s</p>" % self.t("sa_intro"))
+        for finding in findings:
+            self.w('<div class="finding %s">' % esc(finding.severity))
+            self.w('<div class="badge">%s</div>' % self.t("sev_" + finding.severity))
+            self.w("<h3>%s</h3>" % self.t(finding.title_key, **finding.params))
+            self.w("<p>%s</p>" % self.t(finding.body_key, **finding.params))
+            self.w("</div>")
 
     def section_daily(self) -> None:
         a = self.a

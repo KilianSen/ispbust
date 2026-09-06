@@ -345,6 +345,11 @@ STRINGS: dict = {
 }
 
 
+from .findings import FINDING_STRINGS  # noqa: E402
+
+STRINGS.update(FINDING_STRINGS)
+
+
 class Strings:
     """Language-bound lookup with English fallback."""
 

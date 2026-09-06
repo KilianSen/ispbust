@@ -52,6 +52,19 @@ tbody tr:nth-child(even){background:#fafbfc}
 
 .note{background:var(--warn-bg);border-left:3px solid var(--warn-line);padding:10px 14px;
       margin:14px 0;border-radius:0 6px 6px 0}
+.finding{border:1px solid var(--line);border-left-width:4px;border-radius:0 6px 6px 0;
+         padding:10px 14px;margin:12px 0;background:#fafbfc}
+.finding h3{margin:2px 0 4px;font-size:15px}
+.finding p{margin:0;color:#2c3540}
+.finding .badge{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.finding.critical{border-left-color:var(--primary);background:#fdf2f0}
+.finding.critical .badge{color:var(--primary)}
+.finding.warning{border-left-color:var(--warn-line);background:var(--warn-bg)}
+.finding.warning .badge{color:#8a6114}
+.finding.neutral{border-left-color:var(--control)}
+.finding.neutral .badge{color:var(--control)}
+.finding.good{border-left-color:var(--good);background:#f2f9f5}
+.finding.good .badge{color:var(--good)}
 .method{color:var(--muted);font-size:13px}
 .empty{color:var(--muted);font-style:italic}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;

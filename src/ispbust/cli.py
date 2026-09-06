@@ -167,6 +167,7 @@ def cmd_report(args) -> int:
     h = analysis.headline()
     print("wrote %s (%.0f KB)" % (args.out, args.out.stat().st_size / 1024))
     print_headline(h)
+    print_assessment(analysis, args.language)
     return 0
 
 
@@ -185,6 +186,39 @@ def print_headline(h: dict) -> None:
               % ("{:,}".format(h["primary_only_bad"]), "{:,}".format(h["common_minutes"])))
 
 
+def print_assessment(analysis, language: str | None = None) -> None:
+    """The same findings the report states, so the terminal cannot disagree."""
+    from .assessment import assess
+    from .report.strings import Strings
+
+    findings = assess(analysis)
+    if not findings:
+        return
+    t = Strings(language or analysis.site.language)
+    print()
+    print("assessment")
+    for f in findings:
+        print("  [%-8s] %s" % (f.severity, t(f.title_key, **f.params)))
+        body = t(f.body_key, **f.params)
+        for line in _wrap(body, 74):
+            print("             %s" % line)
+
+
+def _wrap(text: str, width: int) -> list:
+    import re
+    words = re.sub(r"<[^>]+>", "", text).split()
+    lines, current = [], ""
+    for word in words:
+        if len(current) + len(word) + 1 > width:
+            lines.append(current)
+            current = word
+        else:
+            current = (current + " " + word).strip()
+    if current:
+        lines.append(current)
+    return lines
+
+
 def cmd_summary(args) -> int:
     from .analysis import analyse
     from .config import load_site_config
@@ -194,10 +228,14 @@ def cmd_summary(args) -> int:
     analysis = analyse(site, databases, args.date_from, args.date_to)
     h = analysis.headline()
     if args.json:
+        from .assessment import assess
+        h["findings"] = [{"key": f.key, "severity": f.severity, "params": f.params}
+                         for f in assess(analysis)]
         print(json.dumps(h, indent=2))
     else:
         print("ispbust summary %s .. %s" % (args.date_from, args.date_to))
         print_headline(h)
+        print_assessment(analysis, args.language)
     return 0
 
 
@@ -363,9 +401,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="use databases already on disk instead of pulling fresh ones")
     s.set_defaults(func=cmd_report)
 
-    s = sub.add_parser("summary", help="print the headline numbers without building a report")
+    s = sub.add_parser("summary", help="print the headline numbers and the assessment")
     add_site_args(s)
     s.add_argument("--json", action="store_true")
+    s.add_argument("--language", default=None)
     s.add_argument("--no-fetch", action="store_true")
     s.set_defaults(func=cmd_summary)
 
